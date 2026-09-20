@@ -1,4 +1,5 @@
 import { actor, json, preflight } from "@/lib/api";
+import { broadcast } from "@/lib/broadcast";
 import { addTrace } from "@/lib/store";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,5 +12,7 @@ export async function POST(req: Request) {
   const b = await req.json().catch(() => ({}));
   const kind = ["status", "thought", "tool", "finding"].includes(b.kind) ? b.kind : "thought";
   await addTrace(who.handle, kind, b.text || "");
+  await broadcast("trace", { node: who.handle, kind, text: b.text || "", ts: new Date().toISOString() });
+  await broadcast("state", {});
   return json({ ok: true });
 }

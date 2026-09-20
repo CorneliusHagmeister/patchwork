@@ -1,4 +1,5 @@
 import { actor, json, preflight } from "@/lib/api";
+import { broadcast } from "@/lib/broadcast";
 import { submitFinding } from "@/lib/store";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,5 +10,6 @@ export async function POST(req: Request) {
   if (!who) return json({ error: "unauthorized" }, 401);
   const b = await req.json().catch(() => ({}));
   const f = await submitFinding(who.cid, who.handle, b);
+  await broadcast("state", {});
   return json(f);
 }

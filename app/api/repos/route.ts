@@ -1,4 +1,5 @@
 import { actor, json, preflight } from "@/lib/api";
+import { broadcast } from "@/lib/broadcast";
 import { addRepo } from "@/lib/store";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,5 +14,6 @@ export async function POST(req: Request) {
     ? b.targets
     : String(b.targets || "").split(",").map((s: string) => s.trim()).filter(Boolean);
   const r = await addRepo(b.name, b.url || "", b.language || "Other", targets, who.handle);
+  await broadcast("state", {});
   return json(r);
 }

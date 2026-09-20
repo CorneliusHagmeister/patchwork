@@ -69,112 +69,92 @@ Run locally: `npm install && npm start` (listens on `:8080`).
 
 ---
 
-# Integration — APPLY MANUALLY
+# Integration — DONE (wired 2026-09-20)
 
-> These edits touch files another process owns (`app/**`, the dashboard). They
-> are **not** applied by this task. Copy-paste them in when ready. The two new
-> helpers — `lib/broadcast.ts` and `lib/useLive.ts` — already exist and are safe.
+This is no longer a TODO. The call sites exist; this section records what was
+wired and why, so the shape isn't re-litigated.
 
 ## 1. Broadcast after mutations (server side)
 
-In each mutating API route, import the helper and fire it **after** a successful
-mutation. It's fire-and-forget and swallows all errors, so it never affects the
-response. Keep it un-awaited (or `void`) so it can't add latency.
-
-Add to the top of each route file:
+Each mutating route imports `broadcast` and fires it on the **successful** path only:
 
 ```ts
 import { broadcast } from "@/lib/broadcast";
+...
+await broadcast("state", {});
 ```
 
-Then, just before each successful `return json(...)`, add:
+Wired in:
 
-```ts
-void broadcast("state", {});
-```
+| route | fires when |
+|---|---|
+| `app/api/join/route.ts`            | `r.ok` (a bad join code broadcasts nothing) |
+| `app/api/work/claim/route.ts`      | an item was actually claimed (not on `{none:true}`) |
+| `app/api/findings/route.ts`        | always (a finding was written) |
+| `app/api/nodes/heartbeat/route.ts` | always — this is what drives radar liveness |
+| `app/api/trace/route.ts`           | always; emits `"trace"` **and** `"state"` |
+| `app/api/verify/route.ts`          | the finding existed and its tier flipped |
+| `app/api/repos/route.ts`           | always (repo + work items created) |
 
-Apply to the end of the successful path in each of:
+### `await`, not `void` — deliberate
 
-- `app/api/repos/route.ts`
-- `app/api/work/claim/route.ts`
-- `app/api/findings/route.ts`
-- `app/api/nodes/heartbeat/route.ts`
-- `app/api/trace/route.ts`
-- `app/api/verify/route.ts`
-
-### Extra for `app/api/trace/route.ts`
-
-The trace route feeds the live conversation stream, so also emit the trace line
-itself (in addition to `"state"`). Current success path:
-
-```ts
-  await addTrace(who.handle, kind, b.text || "");
-  return json({ ok: true });
-```
-
-becomes:
-
-```ts
-  await addTrace(who.handle, kind, b.text || "");
-  void broadcast("trace", { node: who.handle, kind, text: b.text || "", ts: new Date().toISOString() });
-  void broadcast("state", {});
-  return json({ ok: true });
-```
-
-(The dashboard treats both `"state"` and `"trace"` the same — as a signal to
-refetch `/api/state` — so the exact `trace` payload shape is not load-bearing;
-it's there for future use / debugging.)
+An earlier draft of this file said to keep the call un-awaited. **That is wrong on
+Vercel.** A serverless function can be frozen or torn down the moment it returns
+its response, so an un-awaited `fetch` may never leave the instance — which is
+exactly the "relay deployed, zero frames arriving" failure this was meant to fix.
+`broadcast()` is safe to await: it has a 1.5s `AbortController` timeout, swallows
+every error, and no-ops entirely when `RELAY_URL` is unset. With Vercel functions
+pinned to `lhr1` (`vercel.json`) and the relay in `lhr`, the real cost is a few ms.
 
 ## 2. Dashboard: subscribe to push (client side)
 
-`app/dashboard/page.tsx` is already a client component (`"use client"` at top),
-so no directive change is needed. Add the import:
+`app/dashboard/page.tsx` (already a client component) does:
 
 ```ts
 import { useLive } from "@/lib/useLive";
-```
+...
+const tickRef = useRef<() => void>(() => {});
+const { connected } = useLive((msg) => {
+  if (msg.type === "state" || msg.type === "trace") tickRef.current();
+});
 
-Inside `export default function Dashboard()`, the existing poll effect is:
-
-```ts
-  // poll state
-  useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      try { const r = await fetch("/api/state", { cache: "no-store" }); const d = await r.json(); if (alive) { setS(d); nodesRef.current = d.nodes || []; } } catch {}
-    };
-    tick(); const iv = setInterval(tick, 1500);
-    return () => { alive = false; clearInterval(iv); };
-  }, []);
-```
-
-Replace it with a version that (a) exposes `tick` to the push handler via a ref,
-and (b) lengthens the poll interval to ~5s once the relay is connected:
-
-```ts
-  const tickRef = useRef<() => void>(() => {});
-
-  // Live push: on any push, do ONE immediate /api/state fetch (single source of truth).
-  const { connected } = useLive((msg) => {
-    if (msg.type === "state" || msg.type === "trace") tickRef.current();
-  });
-
-  // poll state (fallback; slows to 5s when the relay is connected)
-  useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      try { const r = await fetch("/api/state", { cache: "no-store" }); const d = await r.json(); if (alive) { setS(d); nodesRef.current = d.nodes || []; } } catch {}
-    };
-    tickRef.current = tick;
-    tick();
-    const iv = setInterval(tick, connected ? 5000 : 1500);
-    return () => { alive = false; clearInterval(iv); };
-  }, [connected]);
+useEffect(() => {
+  let alive = true;
+  const tick = async () => { /* fetch /api/state, setS(d) */ };
+  tickRef.current = tick;
+  tick(); const iv = setInterval(tick, connected ? 5000 : 1500);
+  return () => { alive = false; clearInterval(iv); };
+}, [connected]);
 ```
 
 Notes:
-- `connected` is in the effect deps, so when the socket connects/drops the poll
-  interval automatically switches between 5000ms and 1500ms.
-- `useLive` uses a ref for the latest callback internally, so passing a fresh
-  arrow function each render does **not** cause reconnect churn.
-- Optionally surface `connected` in the UI (e.g. a "live" dot) — not required.
+- `connected` is in the effect deps, so the poll interval switches between 5000ms
+  and 1500ms automatically as the socket connects/drops.
+- `useLive` keeps the latest callback in a ref, so a fresh arrow function each
+  render does **not** cause reconnect churn.
+- Both `"state"` and `"trace"` frames mean the same thing to the dashboard —
+  refetch `/api/state`. The `trace` payload shape is not load-bearing.
+
+## 3. Verifying it end-to-end
+
+Attach a WS subscriber and confirm frames arrive on a real mutation:
+
+```bash
+# terminal 1 — subscribe
+npx wscat -c wss://patchwork-relay.fly.dev
+
+# terminal 2 — mutate
+curl -s -XPOST https://<app>/api/join -H 'content-type: application/json' \
+  -d '{"handle":"relay-test","location":"London","code":"<JOIN_CODE>"}'
+```
+
+Expect `{"type":"state","data":{}}` in terminal 1. No frame = check that
+`RELAY_URL` (https, server-side) and `RELAY_SECRET` are set on the Vercel target
+you actually hit, and that the secret matches fly's.
+
+## 4. Regions
+
+`fly.toml` pins `primary_region = "lhr"` and `vercel.json` pins
+`"regions": ["lhr1"]`. Neon is `eu-west-2` and the demo audience is in London —
+without both, functions run in Washington DC and every DB + relay hop crosses the
+Atlantic twice. Changing either one only takes effect on a redeploy of that service.

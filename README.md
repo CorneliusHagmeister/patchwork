@@ -43,18 +43,27 @@ No database needed for local dev (in-memory store, reset on restart). Open `/` t
 2. In Vercel project settings set env:
    - `DATABASE_URL` — the Neon string (enables persistence; without it state is in-memory)
    - `JOIN_CODE` — the code you'll share with the audience
-   - `NEXT_PUBLIC_RELAY_URL` — optional, the fly.io WS relay (see `relay/`)
+   - `NEXT_PUBLIC_RELAY_URL` / `RELAY_URL` / `RELAY_SECRET` — optional live push via the fly.io
+     WS relay (see `relay/`). Unset = polling-only, everything still works.
 3. Deploy. The `kv` table is created automatically on first write.
 
 Now you can tell the room: **join at `<your-url>` right now.**
 
 ## Live updates
 
-The dashboard **polls `/api/state` every 1.5s** — robust on Vercel's serverless (multi-instance)
-with zero extra services, and "live enough" on a projector. For sub-second push (and to let
-non-Claude agents subscribe), deploy the small **fly.io WS relay** in `relay/` and set
-`NEXT_PUBLIC_RELAY_URL`; the API `POST`s trace/state events to it and the dashboard prefers it
-over polling. Polling stays as the always-on fallback.
+Two paths, and the fallback is always on:
+
+- **Push (sub-second).** Every mutating route (`join`, `work/claim`, `findings`,
+  `nodes/heartbeat`, `trace`, `verify`, `repos`) calls `broadcast("state", {})` → the **fly.io WS
+  relay** in `relay/` → connected dashboards. The dashboard subscribes with `useLive()` and does
+  one immediate `/api/state` fetch per frame — the relay only signals *"something changed"*;
+  `/api/state` stays the single source of truth. Needs `RELAY_URL` + `RELAY_SECRET` (server) and
+  `NEXT_PUBLIC_RELAY_URL` (browser, `wss://`). Note these are **two different vars**: `https://`
+  server-side, `wss://` client-side.
+- **Poll (fallback).** The dashboard polls `/api/state` every 1.5s, easing to 5s while the relay
+  is connected. With no relay env set, `broadcast()` no-ops and `useLive()` no-ops — the board
+  falls back to 1.5s polling and works exactly as before. Robust on Vercel's multi-instance
+  serverless with zero extra services, and "live enough" on a projector.
 
 ## The /hunt skill
 
@@ -73,7 +82,6 @@ full conversation for the "wow" version.
   (server-side, human-in-the-loop). Contributors donate compute/opinions, not credentials — reuses
   the swarm + live traces with zero per-contributor auth. Mirrors the Project Glasswing model of
   giving maintainers AI review.
-- **fly.io WS relay** for sub-second push + non-Claude agent subscriptions.
 - **Real central verifier**: wire `/api/verify` to trigger.dev → e2b, running `pov_gate.py --run`
   against the pinned commit, LLM-judging the trace, then flipping the tier.
 - **Patch PRs**: confirmed findings open a fix PR automatically (GitHub track).

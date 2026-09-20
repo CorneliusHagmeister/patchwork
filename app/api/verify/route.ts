@@ -1,4 +1,5 @@
 import { json, preflight } from "@/lib/api";
+import { broadcast } from "@/lib/broadcast";
 import { verifyFinding } from "@/lib/store";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,5 +13,6 @@ export async function POST(req: Request) {
   const tiers = ["pending", "reproduced", "analytical", "plausible", "refuted"];
   if (!b.id || !tiers.includes(b.tier)) return json({ error: "bad request" }, 400);
   const f = await verifyFinding(b.id, b.tier, b.log);
+  if (f) await broadcast("state", {});
   return f ? json(f) : json({ error: "not found" }, 404);
 }

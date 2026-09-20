@@ -9,7 +9,7 @@ _Current state (for continuity across compaction):_
 
 ---
 
-## TASK 1 — Distinct node per contributor (fix handle-collision) — ✅ DONE (2026-09-20), UNCOMMITTED
+## TASK 1 — Distinct node per contributor (fix handle-collision) — ✅ SHIPPED (commit 7d97968)
 
 Nodes are now keyed on a per-contributor non-secret `cid` (`rid()`, minted in `join()` and stored
 on the contributor doc alongside the token). The token is NOT used as the node id — it is public
@@ -29,7 +29,10 @@ Verified locally against Neon: two `ada` joins → two `cid`s → two distinct n
 field anywhere in `/api/state`; `npm run build` clean; `scripts/smoke.sh` passes end-to-end
 (Docker verifier: positive → reproduced, bogus → refuted, over-claim caught).
 
-**Next:** Cor OKs the commit → push → `cor-46` pulls + redeploys.
+**Verified in prod by `cor-46`** after redeploy: two "ada" joins → distinct cids → two distinct
+node rows (Edinburgh + Turin); a hand-seeded pre-cid contributor doc (no `cid` field) still
+resolves via `slug(handle)` — heartbeat 200, claim ok, no orphaning; independent token-leak walk
+of `/api/state` found no `token`/`secret`/`cid` field and no live token as a value.
 
 ---
 
@@ -53,6 +56,10 @@ field anywhere in `/api/state`; `npm run build` clean; `scripts/smoke.sh` passes
 - **Review track.** Second work-item `kind: "review"`: distributed agents submit review comments →
   platform aggregates → operator posts ONE synthesized review under a single trusted credential
   (no per-contributor GitHub auth).
+- **fly.io relay — ✅ WIRED (2026-09-20).** See the TASK 2 section below.
+- **Review track.** Second work-item `kind: "review"`: distributed agents submit review comments →
+  platform aggregates → operator posts ONE synthesized review under a single trusted credential
+  (no per-contributor GitHub auth).
 - **fly.io relay — DEPLOYED but NOT WIRED (from `cor-46`, 2026-09-20).** The relay is live at
   https://patchwork-relay.fly.dev and all env is set (Vercel: `RELAY_SECRET`, `RELAY_URL` https for
   server-side, `NEXT_PUBLIC_RELAY_URL` wss for the browser — two different vars; fly: matching
@@ -65,3 +72,46 @@ field anywhere in `/api/state`; `npm run build` clean; `scripts/smoke.sh` passes
   poll as fallback). Works the moment the calls exist. Also: both READMEs claim this is already
   wired — correct them. Also: `relay/fly.toml` pins `primary_region="iad"`; set `"lhr"` (Neon is
   eu-west-2, audience is London) or future deploys land back in the US.
+
+
+---
+
+## TASK 2 — Wire the fly.io relay — ✅ DONE (2026-09-20)
+
+The relay was deployed but both halves were dead code. Now wired end-to-end.
+
+- **Server push.** All seven mutating routes import `lib/broadcast.ts` and fire on the
+  **successful** path only: `join` (only when `r.ok`), `work/claim` (only when an item was
+  actually claimed), `findings`, `nodes/heartbeat` (this is what drives radar liveness),
+  `trace` (emits `"trace"` **and** `"state"`), `verify` (only when the finding existed),
+  `repos`.
+- **`await`, not `void`.** `relay/README.md` previously said to keep the call un-awaited. That is
+  wrong on Vercel — a function can be frozen the instant it returns, so an un-awaited `fetch` may
+  never leave the instance, which is exactly the "zero frames" failure. `broadcast()` has a 1.5s
+  abort timeout, swallows all errors, and no-ops without `RELAY_URL`, so awaiting is safe.
+- **Client.** `app/dashboard/page.tsx` calls `useLive()`; any `state`/`trace` frame triggers one
+  immediate `/api/state` fetch. `/api/state` stays the single source of truth — the relay only
+  signals "something changed". Poll retained as fallback, easing 1.5s → 5s while connected.
+- **Regions.** `relay/fly.toml` `iad` → `lhr`; new `vercel.json` pins `"regions": ["lhr1"]`.
+  Neon is eu-west-2 and the audience is London. **Both only take effect on a redeploy of that
+  service** — fly redeploy for the relay, Vercel redeploy for the app (`cor-46` owns both).
+- **READMEs corrected.** Root `README.md` "Live updates" described push as already working when it
+  wasn't; `relay/README.md`'s "Integration — APPLY MANUALLY" section is now a record of what was
+  wired, including why `await` replaced `void`.
+- `relay/package-lock.json` committed — the Dockerfile already copies `package-lock.json*`, so this
+  pins `ws` for fly builds instead of floating.
+
+**Tested locally** against a real relay on :8090 (`RELAY_SECRET` set): wrong secret → 401, right →
+204. WS subscriber attached, then every route exercised — all seven produced frames, `trace`
+produced `trace`+`state`, and the two negative cases produced **no** frame (bad join code; claim
+returning `{none:true}`). Deterministic across repeated runs. `npm run build` clean;
+`scripts/smoke.sh` green with the Docker verifier (over-claim still caught).
+
+**Still needs `cor-46`:** fly redeploy for the `lhr` region, Vercel redeploy for `vercel.json` +
+the new call sites, then the live WS-subscriber test against `wss://patchwork-relay.fly.dev`.
+
+### ⚠️ Testing against prod Neon writes real rows
+`.env.local` points at the **shared prod** Neon, so `scripts/smoke.sh` and any local API test write
+rows the audience would see. Run the dev server with `DATABASE_URL=` (empty) to force the in-memory
+backend — `store.ts` falls back automatically — or clean up afterwards. Seeded-board baseline is
+4 repos / 8 work_items / 6 findings / nodes `cor`+`mira` / 0 contributors.

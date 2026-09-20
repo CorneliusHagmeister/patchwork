@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useLive } from "@/lib/useLive";
 
 type State = { repos: any[]; work: any[]; findings: any[]; nodes: any[]; traces: any[]; stats: any };
 const EMPTY: State = { repos: [], work: [], findings: [], nodes: [], traces: [], stats: {} };
@@ -18,15 +19,23 @@ export default function Dashboard() {
 
   useEffect(() => { setToken(localStorage.getItem("pw_token")); }, []);
 
-  // poll state
+  // Live push from the fly.io relay: any frame = one immediate /api/state fetch.
+  // /api/state stays the single source of truth; the relay only signals "something changed".
+  const tickRef = useRef<() => void>(() => {});
+  const { connected } = useLive((msg) => {
+    if (msg.type === "state" || msg.type === "trace") tickRef.current();
+  });
+
+  // poll state (always-on fallback; slows to 5s while the relay is connected)
   useEffect(() => {
     let alive = true;
     const tick = async () => {
       try { const r = await fetch("/api/state", { cache: "no-store" }); const d = await r.json(); if (alive) { setS(d); nodesRef.current = d.nodes || []; } } catch {}
     };
-    tick(); const iv = setInterval(tick, 1500);
+    tickRef.current = tick;
+    tick(); const iv = setInterval(tick, connected ? 5000 : 1500);
     return () => { alive = false; clearInterval(iv); };
-  }, []);
+  }, [connected]);
 
   // radar
   useEffect(() => {
