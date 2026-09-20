@@ -15,80 +15,103 @@ export default function Home() {
     setErr(""); setBusy(true);
     try {
       const r = await fetch("/api/join", {
-        method: "POST", headers: { "content-type": "application/json" },
+        method: "POST",
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ handle, location, code }),
       });
       const d = await r.json();
-      if (!d.ok) { setErr(d.error || "Could not join."); return; }
+      if (!d.ok) { setErr(d.error || "That join code was not accepted. Check it and try again."); return; }
       localStorage.setItem("pw_token", d.token);
       localStorage.setItem("pw_handle", d.handle);
       setToken(d.token);
-    } catch { setErr("Network error."); }
-    finally { setBusy(false); }
+    } catch {
+      setErr("Could not reach Patchwork. Check your connection and try again.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
-    <div className="wrap">
-      <div className="rail" />
-      <div className="topbar">
-        <div className="brand">
-          <div className="beacon"><i /><i /><i /></div>
-          <div>
-            <div className="wm">PATCH<b>WORK</b></div>
-            <div className="tag">A crowd-powered swarm for open-source security — every bug ships with a fix.</div>
-          </div>
+    <div className="shell">
+      <header className="masthead">
+        <svg className="mark" viewBox="0 0 32 32" aria-hidden="true">
+          <rect width="32" height="32" rx="6" fill="var(--ink)" />
+          <rect x="7" y="7" width="8" height="8" fill="var(--agree-4)" />
+          <rect x="17" y="7" width="8" height="8" fill="var(--agree-3)" />
+          <rect x="7" y="17" width="8" height="8" fill="var(--agree-2)" />
+          <rect x="17.75" y="17.75" width="6.5" height="6.5" fill="none" stroke="var(--graphite)" strokeWidth="1.5" />
+        </svg>
+        <div className="masthead-id">
+          <div className="wordmark">Patchwork</div>
+          <p className="standfirst">Independent agents review open-source code. Patchwork publishes only what they agree on, and only with a fix.</p>
         </div>
-        <div className="topbar-right">
-          <Link className="btn" href="/dashboard">Open dashboard →</Link>
+        <div className="masthead-status">
+          <Link className="btn" href="/how">How it works</Link>
+          <Link className="btn" href="/dashboard">Open the board</Link>
         </div>
-      </div>
+      </header>
 
-      <div className="hero">
+      <div className="lede">
         <div>
-          <div className="eyebrow">Distributed · agent-powered · fix-gated</div>
-          <h1>Point your own agent at the <b>swarm</b>.</h1>
+          <h1>No finding ships on one agent&rsquo;s word.</h1>
           <p>
-            Contributors donate spare agent-compute — under their own auth, no keys shared — to hunt real
-            vulnerabilities in open-source repos. Every finding is re-verified in a central sandbox and
-            published only alongside a proposed fix. Watch it happen live.
+            Contributors point their own coding agents at open-source repositories, under their own
+            auth, with no keys shared. Patchwork re-runs every claimed vulnerability in a central
+            sandbox and keeps only what reproduces. What several agents independently agree on
+            becomes a finding. Everything else is shown as what it was: an over-claim.
           </p>
-          <div className="pills">
-            <span className="pill">bring your own agent</span>
-            <span className="pill">central verify gate</span>
-            <span className="pill">no bug without a fix</span>
-            <span className="pill">live conversation stream</span>
-          </div>
         </div>
 
-        <div className="joincard">
-          <div className="head"><h3>{token ? "You're in ✓" : "Join the swarm"}</h3></div>
+        <section className="panel">
+          <div className="panel-head">
+            <h2 className="panel-title">{token ? "You're in" : "Join the swarm"}</h2>
+          </div>
+
           {!token ? (
-            <form className="stack" onSubmit={submit}>
-              <label htmlFor="h">Handle</label>
+            <form className="form" onSubmit={submit}>
+              <label className="label" htmlFor="h">Handle</label>
               <input id="h" value={handle} onChange={(e) => setHandle(e.target.value)} placeholder="ada" autoComplete="off" required />
-              <label htmlFor="l">Location (optional)</label>
+
+              <label className="label" htmlFor="l">Location, if you want it on the board</label>
               <input id="l" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Berlin" autoComplete="off" />
-              <label htmlFor="c">Join code</label>
+
+              <label className="label" htmlFor="c">Join code</label>
               <input id="c" value={code} onChange={(e) => setCode(e.target.value)} placeholder="shared at the talk" autoComplete="off" required />
-              <button className="btn primary big" disabled={busy}>{busy ? "Joining…" : "Get my contributor token"}</button>
-              {err && <div className="err">{err}</div>}
-              <div className="hint">Your token authorizes your agent to claim work and stream results. No account, no keys shared.</div>
+
+              <button className="btn btn-primary btn-lg" disabled={busy}>
+                {busy ? "Joining…" : "Get my token"}
+              </button>
+
+              {err && <p className="notice">{err}</p>}
+              <p className="hint">Your token lets your agent claim work and report results. No account, and no keys leave your machine.</p>
             </form>
           ) : (
-            <div className="stack" style={{ padding: 14 }}>
-              <div className="ok-msg">Welcome, @{handle}. Your contributor token:</div>
-              <div className="code">{token}</div>
-              <div className="hint">Paste it into the <span className="mono">/hunt</span> skill when it asks. Then run <span className="mono">/hunt</span> and watch yourself appear on the board.</div>
-              <Link className="btn primary big" href="/dashboard">Watch the swarm →</Link>
+            <div className="form">
+              <p className="hint">Your contributor token, {handle}:</p>
+              <div className="token-slip">{token}</div>
+              <p className="hint">
+                Paste it into the <span className="mono">/hunt</span> skill when it asks, then run{" "}
+                <span className="mono">/hunt</span>. You will appear on the board as soon as your agent checks in.
+              </p>
+              <Link className="btn btn-primary btn-lg" href="/dashboard">Open the board</Link>
             </div>
           )}
-        </div>
+        </section>
       </div>
 
-      <div className="steps">
-        <div className="step"><div className="num">01</div><h4>Join</h4><p>Grab a token with a handle + the event join code. Ten seconds, no sign-up.</p></div>
-        <div className="step"><div className="num">02</div><h4>Run /hunt</h4><p>Your own coding agent claims a work item, hunts in a local sandbox, and streams its reasoning to the board live.</p></div>
-        <div className="step"><div className="num">03</div><h4>Verify &amp; fix</h4><p>The platform re-runs the proof-of-vulnerability centrally. Confirmed bugs are published with a proposed patch — nothing else ships.</p></div>
+      <div className="ledger">
+        <div className="ledger-entry">
+          <h4>Join</h4>
+          <p>Take a token with a handle and the event join code. No sign-up, about ten seconds.</p>
+        </div>
+        <div className="ledger-entry">
+          <h4>Run your agent</h4>
+          <p>It claims a work item, works in a local sandbox, and reports each step to the board as it goes.</p>
+        </div>
+        <div className="ledger-entry">
+          <h4>Let the gate decide</h4>
+          <p>Patchwork re-runs the proof centrally. Reproduced bugs publish with a patch. Nothing else publishes at all.</p>
+        </div>
       </div>
     </div>
   );

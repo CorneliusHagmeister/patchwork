@@ -53,13 +53,8 @@ of `/api/state` found no `token`/`secret`/`cid` field and no live token as a val
   when Docker is absent.
 - **e2b / trigger.dev verifier (parked).** Only wire if Cor explicitly authorizes (paid) and
   provides `E2B_API_KEY`. Code is ready (`verifier/verify.mjs` e2b backend + `verifier/trigger/verify.ts`).
-- **Review track.** Second work-item `kind: "review"`: distributed agents submit review comments →
-  platform aggregates → operator posts ONE synthesized review under a single trusted credential
-  (no per-contributor GitHub auth).
+- **Review track — ✅ SHIPPED (2026-09-20).** See the TASK 3 section below.
 - **fly.io relay — ✅ WIRED (2026-09-20).** See the TASK 2 section below.
-- **Review track.** Second work-item `kind: "review"`: distributed agents submit review comments →
-  platform aggregates → operator posts ONE synthesized review under a single trusted credential
-  (no per-contributor GitHub auth).
 - **fly.io relay — DEPLOYED but NOT WIRED (from `cor-46`, 2026-09-20).** The relay is live at
   https://patchwork-relay.fly.dev and all env is set (Vercel: `RELAY_SECRET`, `RELAY_URL` https for
   server-side, `NEXT_PUBLIC_RELAY_URL` wss for the browser — two different vars; fly: matching
@@ -115,3 +110,106 @@ the new call sites, then the live WS-subscriber test against `wss://patchwork-re
 rows the audience would see. Run the dev server with `DATABASE_URL=` (empty) to force the in-memory
 backend — `store.ts` falls back automatically — or clean up afterwards. Seeded-board baseline is
 4 repos / 8 work_items / 6 findings / nodes `cor`+`mira` / 0 contributors.
+
+---
+
+## TASK 3 — Review track (aggregate distributed reviews → one posted review) — ✅ SHIPPED (2026-09-20)
+
+The hunt track finds bugs; the review track reviews a PR with a swarm and posts ONE synthesized
+review. Built to sit beside the hunt track without disturbing it — new files + additive edits only.
+
+**The story it enables:** swarm finds a bug (hunt) → an agent drafts a fix (PR #1 on the snare
+fork, see below) → the swarm reviews that fix (review track) → the platform clusters everyone's
+comments → operator posts one consensus review. Both tracks in one loop.
+
+### The real PR the swarm reviews
+`CorneliusHagmeister/snare#1` — "Bound the pre-auth HTTP request line and header block"
+(https://github.com/CorneliusHagmeister/snare/pull/1). A hardening fix for the confirmed snare-h1
+resource-consumption finding in the pre-auth HTTP path: bounds the request line, the header block
+and the header count. Reproduction steps and measurements are deliberately kept out of this repo
+pending upstream disclosure. 31 tests pass (4 new in `tests/limits.rs`).
+Branch `patchwork/bound-http-request-line`, committed + pushed + PR open against the fork's master.
+
+### Code (all mine; no collision with the frontend/e2b sessions)
+- `lib/types.ts` — `ReviewTarget`, `ReviewComment`, `REVIEW_LENSES` (6 lenses), `ReviewCategory`,
+  `Severity`; `WorkItem.reviewTarget?` added.
+- `lib/aggregate.ts` (new, pure) — `aggregate(comments, target)`: clusters by
+  (path, line-bucket-of-5, category) — NOT by wording, because lexical similarity misses the
+  independent-agreement signal (two agents phrase the same bug differently). Consensus = number
+  of DISTINCT contributors in a cluster. Ranks severity × consensus. Emits `summaryBody`
+  (markdown, grouped by file), `inlineComments` (GitHub review-API shape), and per-cluster
+  "other agents' notes" `<details>` blocks so no voice is lost.
+- `lib/store.ts` — `addReviewTarget` (fans out one review work item per lens into `review_work`),
+  `claimReview`, `submitReview`, `aggregateReview`, `markReviewPosted`; `getState()` now also
+  returns `reviewTargets`, `reviewWork`, `reviewComments`. Collections: `review_targets`,
+  `review_work`, `review_comments` (kept separate from hunt's `work_items`/`findings`).
+- `app/api/review/{target,claim,comments,aggregate,post}/route.ts` — target-add (operator, parses
+  a PR url), claim, submit-batch, aggregate (dry preview, GET+POST), and **post** (the trusted
+  publisher: guarded by `JOIN_CODE` like `/api/verify`; posts ONE review via GitHub reviews API
+  under `GITHUB_TOKEN`; falls back to body-only if inline lines aren't in the diff; runs as a
+  dry-run returning the synthesized review when `GITHUB_TOKEN` is unset).
+- `mcp/server.mjs` — `pw_review_next` + `pw_submit_review` tools and a `review` prompt for the
+  Claude Desktop / MCP contribution path.
+
+### Dashboard (the frontend session owns page.tsx; we converged on a data contract)
+The redesigned dashboard consumes `s.reviewTargets` + `s.reviewComments` from `/api/state` and
+fetches clusters from `/api/review/aggregate?target=<id>` (re-fetch when a comment lands). Both are
+provided. Do NOT add a `rounds` field to getState — an earlier draft did; the frontend dropped it
+in favour of calling the aggregate endpoint directly, so it was removed to avoid running
+`aggregate()` on every poll.
+
+### Verified
+`npm run build` clean (all 5 review routes compile); `npx tsc --noEmit` clean. End-to-end smoke
+(in-memory backend, `DATABASE_URL=` empty) repeatedly: 3 agents join → operator adds PR #1 →
+each claims a lens → 6 comments where 2 pairs are the SAME issue found independently → aggregate
+returns 6 raw → 4 distinct, consensus ×2 on both the security and correctness points, with the
+minority wording preserved in a details block → dry-run post returns the review it would publish.
+
+**Not done (needs Cor):** the REAL GitHub post. It's outward-facing, so it needs explicit go-ahead
+and `GITHUB_TOKEN` in Vercel env (the chosen publisher model). The dry-run proves the synthesis;
+flip `GITHUB_TOKEN` on and drop `dry` to post for real. Also open: a "review" entry point in the
+zero-install hunt-prompt / Join UI so contributors can pick review vs hunt.
+
+---
+
+## TASK 4 — Superlinked SIE (semantic consensus) + Projects impact view — ✅ SHIPPED (2026-09-20)
+
+Two things: an impact view, and swapping the review aggregator's clustering for embeddings.
+
+### Projects / impact view (mine; no page.tsx collision)
+- `lib/store.ts` `getProjects()` — per-repo rollup. Reconciles the two repo namings (findings store
+  short "snare"; review targets store "owner/repo") on the last path segment. Emits findings tallies,
+  review comments → consensus points → posted review (+ URL), distinct contributors, a `contributions`
+  count (proxy for donated effort — we do NOT meter LLM time yet), and an activity ledger of concrete
+  events (finding / verified / over-claim / review-comment / review-posted).
+- `app/api/projects/route.ts` (GET) + `app/projects/page.tsx` — self-contained page reusing the
+  frontend session's design system (shell/panel/readout/stream). Per-project panel + activity ledger,
+  e.g. "@ada commented on src/httpserver.rs:341 (security)", "synthesized review posted to PR#1 ↗".
+
+### Superlinked Inference Engine (SIE) — the orchestrator's semantic engine
+SIE = superlinked/sie (open-source, checked out at ~/Documents/projects/Hackathons/open-source/sie).
+OpenAI-compatible `/v1/embeddings`, port 8080 self-hosted, models Stella/Qwen3/SPLADE/etc; key is any
+string self-hosted. Hackathon guide (Notion, can't scrape — needs human): the hosted endpoint + key +
+model. Org gave us access.
+- `lib/embeddings.ts` — `embed(texts)` → SIE `/v1/embeddings`; env `SIE_URL`, `SIE_MODEL` (default
+  "stella"), `SIE_API_KEY`. Best-effort: returns null on unset/unreachable/mismatch → graceful fallback.
+- `lib/aggregate.ts` — refactored: shared `finalize()`; `aggregate()` (lexical fallback) unchanged in
+  behaviour; NEW `aggregateSemantic(comments, target, embeddings, model)` — union-find over same-file
+  pairs with cosine ≥ `SEMANTIC_THRESHOLD` (0.8). `Aggregated.stats` now carries `method` + `model`.
+- `lib/store.ts` `aggregateReview()` — embeds comment bodies via SIE when configured → semantic,
+  else lexical. `app/api/projects` reports `orchestrator: {engine, model}`; `/projects` shows a
+  "⚡ Powered by Superlinked" badge ONLY when engine === "superlinked-sie" (honest).
+
+### Verified
+`npm run build` clean (/projects + /api/projects in the route table); `tsc` clean. Unit test
+(scratchpad sem.test.ts, tsx + mock vectors): lexical keeps two same-meaning/different-line/different-
+category comments SEPARATE (consensusMax 1); semantic MERGES them (clustered 2, consensusMax 2) →
+proves the quality win. Live wiring test with a mock SIE on :8099 + `SIE_URL` set: aggregate returns
+method="semantic" model="stella-mock", /api/projects orchestrator="superlinked-sie". Graceful fallback
+(no SIE_URL) still lexical (earlier smoke).
+
+**Needs human:** (1) the hosted SIE endpoint URL + model + API key from the Notion guide → set SIE_URL/
+SIE_MODEL/SIE_API_KEY locally + in Vercel. (2) calibrate SEMANTIC_THRESHOLD (0.8) against the real
+model — paraphrases from Stella may sit ~0.6–0.85. (3) "Powered by Superlinked" on the MAIN dashboard
+is the frontend session's call (I only added it to /projects). (4) LLM-time metering if you want real
+"donated compute per project" rather than the contributions proxy.

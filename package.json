@@ -10,13 +10,15 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.127.0",
+    "@e2b/code-interpreter": "^2.8.0",
     "@neondatabase/serverless": "^0.10.4",
+    "@trigger.dev/sdk": "^4.6.3",
     "next": "^15.1.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@trigger.dev/sdk": "^4.6.3",
     "@types/node": "^22.10.7",
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",

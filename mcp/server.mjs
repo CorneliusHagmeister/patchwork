@@ -72,6 +72,39 @@ server.tool(
   async (b) => txt(await api("/api/nodes/heartbeat", b))
 );
 
+server.tool(
+  "pw_review_next",
+  "Claim the next code-review lens for a pull request. Returns {repo,prNumber,url,title,lens,id,reviewTarget} " +
+  "or {none:true}. Review the PR through the given `lens` (correctness | security | performance | api-surface | " +
+  "test-coverage | docs-comments), then call pw_submit_review. Loop until it returns none.",
+  {},
+  async () => {
+    await api("/api/nodes/heartbeat", { status: "running" });
+    return txt(await api("/api/review/claim", {}));
+  }
+);
+
+server.tool(
+  "pw_submit_review",
+  "Submit your review comments for a PR you reviewed. The platform CLUSTERS comments from all agents " +
+  "and posts ONE synthesized review — so comment on real lines and be specific; agreement across agents " +
+  "raises a point's rank. Do NOT post to GitHub yourself.",
+  {
+    target: z.string(),                       // reviewTarget id from pw_review_next
+    workItem: z.string().optional(),          // the claimed work item id
+    comments: z.array(z.object({
+      path: z.string(),                       // repo-relative file path
+      line: z.number().optional(),            // line in the PR's new version (omit for file-level)
+      category: z.enum(["correctness", "security", "performance", "api-design", "tests", "docs", "style"]).default("correctness"),
+      severity: z.enum(["high", "medium", "low", "info"]).default("info"),
+      body: z.string(),                       // the comment, in markdown
+      suggestion: z.string().optional(),      // optional replacement code for a ```suggestion block
+      lens: z.string().optional(),
+    })).min(1),
+  },
+  async (b) => txt(await api("/api/review/comments", b))
+);
+
 server.prompt("hunt", "Contribute this agent to the Patchwork swarm: loop claiming and hunting work items.", {}, () => ({
   messages: [{
     role: "user",
@@ -85,6 +118,23 @@ server.prompt("hunt", "Contribute this agent to the Patchwork swarm: loop claimi
         "4. Submit with pw_submit_finding — claimed='reproduced' ONLY with a real PoV (include pov.cmd + pov.marker so the verifier can re-run it), else 'analytical'. Attach patchDiff if you drafted a fix.\n" +
         "5. Go back to step 1 and keep going until no work remains.\n" +
         "Be honest: the central verifier re-runs your PoV and over-claims are shown publicly.",
+    },
+  }],
+}));
+
+server.prompt("review", "Contribute this agent to a Patchwork swarm review: claim a lens, review the PR, submit comments.", {}, () => ({
+  messages: [{
+    role: "user",
+    content: {
+      type: "text",
+      text:
+        "You are contributing to a Patchwork swarm CODE REVIEW. Loop:\n" +
+        "1. Call pw_review_next. If it returns {none:true}, report that and stop. Otherwise you get a PR (repo, prNumber, url) and a `lens`.\n" +
+        "2. Post a pw_trace saying which PR and lens you claimed.\n" +
+        "3. Review the PR's DIFF through your lens ONLY (correctness / security / performance / api-surface / test-coverage / docs-comments). Read the actual changed files. Be specific: cite real paths and line numbers in the PR's new version.\n" +
+        "4. Call pw_submit_review with your comments (path, line, category, severity, body; add a `suggestion` when you can propose exact replacement code). Comment only on what your lens covers — other agents cover the rest.\n" +
+        "5. Go back to step 1.\n" +
+        "The platform clusters everyone's comments and an operator posts ONE synthesized review. Do NOT post to GitHub yourself. Independent agreement between agents raises a point's rank, so honest, precise comments win.",
     },
   }],
 }));

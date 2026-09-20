@@ -107,8 +107,12 @@ async function runE2B(pov, say) {
     const tar = join(tmpdir(), `pw-${Date.now()}.tar.gz`);
     await exec("tar", ["-czf", tar, "-C", dir, "."]);
     // Sandbox outlives the command so a timed-out run still yields its output.
-    sbx = await Sandbox.create({ timeoutMs: to + 60000, allowInternetAccess: false });
-    say("e2b sandbox created (allowInternetAccess=false)");
+    // The e2b template is the analogue of PW_IMAGE on the docker path: the default
+    // 'base' template has no Rust toolchain, and the sandbox has no network to fetch
+    // one, so anything that builds needs a template that ships the toolchain + deps.
+    const template = pov.template || process.env.E2B_TEMPLATE_ID;
+    sbx = await Sandbox.create({ timeoutMs: to + 60000, allowInternetAccess: false, ...(template ? { template } : {}) });
+    say(`e2b sandbox created (template=${template || "base"}, allowInternetAccess=false)`);
     const { readFile } = await import("node:fs/promises");
     await sbx.files.write("/home/user/work.tar.gz", await readFile(tar));
     await rm(tar, { force: true }).catch(() => {});

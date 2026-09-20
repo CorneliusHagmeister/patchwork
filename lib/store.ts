@@ -1,5 +1,7 @@
 import { neon } from "@neondatabase/serverless";
-import { LENSES, type Finding, type Node, type Repo, type Trace, type WorkItem, type Tier } from "./types";
+import { LENSES, REVIEW_LENSES, type Finding, type Node, type Repo, type Trace, type WorkItem, type Tier, type ReviewTarget, type ReviewComment, type Project, type ProjectEvent } from "./types";
+import { aggregate, aggregateSemantic, MIN_CONSENSUS, type Aggregated } from "./aggregate";
+import { embed, embeddingModel, embeddingsEnabled } from "./embeddings";
 
 /* ---------- document-store backend: in-memory for dev, Neon (kv table) for prod ---------- */
 type Doc = Record<string, any>;
@@ -139,7 +141,7 @@ export async function heartbeat(cid: string, handle: string, patch: Partial<Node
 export async function addTrace(node: string, kind: Trace["kind"], text: string) {
   const doc = ((await be.get("meta", "traces")) as any) || { items: [] };
   doc.items.push({ id: rid(), node, kind, text: String(text).slice(0, 500), ts: now() });
-  if (doc.items.length > 200) doc.items = doc.items.slice(-200);
+  if (doc.items.length > 2000) doc.items = doc.items.slice(-2000);
   await be.set("meta", "traces", doc);
 }
 
@@ -183,13 +185,243 @@ async function maybeSeed() {
   await addTrace("verifier", "status", "✗ rejected: vibe-kanban subprocess arg injection → refuted (could not reproduce)");
 }
 
+/* ---------- review track: fan out a PR, collect comments, synthesize one review ---------- */
+// The operator points the swarm at a pull request; the platform fans out one review work item
+// per lens (mirroring how addRepo fans out hunting lenses). Review work lives in its own
+// `review_work` collection so it never tangles with the hunt queue or claimWork.
+export async function addReviewTarget(repo: string, prNumber: number, url: string, title: string, addedBy: string) {
+  const id = `${slug(repo.split("/").pop() || repo)}-${prNumber}`;
+  const target: ReviewTarget = { id, repo, prNumber, url, title, status: "open", addedBy, addedAt: now() };
+  await be.set("review_targets", id, target);
+  // Replicate each lens R times so multiple DIFFERENT agents review the same lens independently.
+  // With R=1 the replication factor is 1 and consensus>1 is unreachable by construction — the
+  // whole point of a swarm review is independent agreement, so each lens needs several reviewers.
+  let n = 0;
+  for (const L of REVIEW_LENSES) {
+    for (let r = 0; r < reviewReplication(); r++) {
+      const wid = rid();
+      const wi: WorkItem = { id: wid, repo, target: `PR#${prNumber}`, lens: L.lens, oracle: L.category, status: "queued", updatedAt: now(), reviewTarget: id };
+      await be.set("review_work", wid, wi);
+      n++;
+    }
+  }
+  await addTrace(addedBy, "status", `queued review of ${repo}#${prNumber} — ${REVIEW_LENSES.length} lenses × ${reviewReplication()} reviewers = ${n} items`);
+  return { target, workItems: n, replication: reviewReplication() };
+}
+
+// How many independent agents should review each lens. >=1; default 3.
+export const reviewReplication = () => Math.max(1, Number(process.env.REVIEW_REPLICATION) || 3);
+
+export async function claimReview(cid: string, handle: string) {
+  const items = (await be.list("review_work")) as WorkItem[];
+  // A handle must not review the same lens on the same target twice — that would be one agent's
+  // opinion counted as agreement. Skip any queued item whose (target, lens) this handle already took.
+  const taken = new Set(
+    items.filter((w) => w.claimedBy === handle).map((w) => `${w.reviewTarget}#${w.lens}`)
+  );
+  const next = items
+    .filter((w) => w.status === "queued" && !taken.has(`${w.reviewTarget}#${w.lens}`))
+    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))[0];
+  if (!next) return null;
+  next.status = "running"; next.claimedBy = handle; next.claimedAt = now(); next.updatedAt = now();
+  await be.set("review_work", next.id, next);
+  const t = (await be.get("review_targets", next.reviewTarget || "")) as ReviewTarget | null;
+  await heartbeat(cid, handle, { status: "running", currentWork: `review ${next.repo}#${t?.prNumber ?? "?"} · ${next.lens}` });
+  await addTrace(handle, "status", `claimed review lens ${next.lens} on ${next.repo}${t ? " #" + t.prNumber : ""}`);
+  return { ...next, target: t };
+}
+
+export async function submitReview(
+  cid: string, handle: string,
+  b: { target: string; workItem?: string; comments: Partial<ReviewComment>[] }
+) {
+  const target = (await be.get("review_targets", b.target)) as ReviewTarget | null;
+  if (!target) return { error: "unknown review target" as const };
+  const saved: ReviewComment[] = [];
+  for (const c of b.comments || []) {
+    const id = "rc-" + rid();
+    const rc: ReviewComment = {
+      id, target: b.target, workItem: b.workItem,
+      path: (c.path || "").slice(0, 300), line: typeof c.line === "number" ? c.line : undefined,
+      category: (c.category as any) || "correctness", severity: (c.severity as any) || "info",
+      body: (c.body || "").slice(0, 4000), suggestion: c.suggestion ? String(c.suggestion).slice(0, 4000) : undefined,
+      lens: c.lens || "correctness", contributor: handle, createdAt: now(),
+    };
+    await be.set("review_comments", id, rc);
+    saved.push(rc);
+  }
+  if (b.workItem) {
+    const wi = (await be.get("review_work", b.workItem)) as WorkItem | null;
+    if (wi) { wi.status = "done"; wi.updatedAt = now(); await be.set("review_work", wi.id, wi); }
+  }
+  const node = (await be.get("nodes", cid)) as Node | null;
+  if (node) { node.workDone = (node.workDone || 0) + 1; node.status = "idle"; node.lastSeen = now(); await be.set("nodes", node.id, node); }
+  await addTrace(handle, "finding", `submitted ${saved.length} review comment(s) on ${target.repo}#${target.prNumber}`);
+  return { ok: true as const, count: saved.length, comments: saved };
+}
+
+// Cluster all comments for a target into one synthesized review. Pure logic lives in
+// lib/aggregate; this just loads the rows and (optionally) records that we aggregated.
+export async function aggregateReview(targetId: string, markAggregated = false): Promise<Aggregated | null> {
+  const target = (await be.get("review_targets", targetId)) as ReviewTarget | null;
+  if (!target) return null;
+  const all = (await be.list("review_comments")) as ReviewComment[];
+  const mine = all.filter((c) => c.target === targetId);
+  // Cluster on meaning when the Superlinked engine is configured; otherwise fall back to the
+  // lexical (path/line/category) heuristic. embed() returns null on any failure, so this can
+  // never break the review path.
+  let result: Aggregated;
+  const vecs = embeddingsEnabled() ? await embed(mine.map((c) => c.body)) : null;
+  if (vecs) result = aggregateSemantic(mine, target, vecs, embeddingModel());
+  else result = aggregate(mine, target);
+  if (markAggregated && target.status === "open") {
+    target.status = "aggregated"; await be.set("review_targets", targetId, target);
+  }
+  return result;
+}
+
+// Is a target ready to publish? Quorum = every lens has at least MIN_CONSENSUS reviews in. This is
+// deliberately NOT gated on consensus existing: "quorum met, nothing agreed" is an honest outcome
+// for a clean PR. `postable` reports how many points actually cleared the consensus bar. Pass the
+// already-computed Aggregated to avoid re-clustering (the aggregate route does).
+export async function reviewQuorum(targetId: string, agg?: Aggregated) {
+  const target = (await be.get("review_targets", targetId)) as ReviewTarget | null;
+  if (!target) return null;
+  const work = ((await be.list("review_work")) as WorkItem[]).filter((w) => w.reviewTarget === targetId);
+  const comments = ((await be.list("review_comments")) as ReviewComment[]).filter((c) => c.target === targetId);
+  const byLens = new Map<string, number>();      // lens -> reviews submitted (work items done)
+  for (const w of work) if (w.status === "done") byLens.set(w.lens, (byLens.get(w.lens) || 0) + 1);
+  // Show every lens that was fanned out, even at 0 done, so the operator sees the full picture.
+  const allLenses = new Set(work.map((w) => w.lens));
+  const lenses = [...allLenses].map((lens) => ({ lens, done: byLens.get(lens) || 0, need: MIN_CONSENSUS }));
+  const contributors = new Set(comments.map((c) => c.contributor)).size;
+  const a = agg || aggregate(comments, target);
+  return {
+    targetId,
+    lenses,
+    replication: reviewReplication(),
+    contributors,
+    postable: a.agreed.length,                   // points that cleared the consensus bar
+    ready: lenses.length > 0 && lenses.every((l) => l.done >= l.need),
+  };
+}
+
+// Record that a synthesized review was posted to GitHub (called by the post route on success).
+export async function markReviewPosted(targetId: string, postedUrl: string, postedIds: string[]) {
+  const target = (await be.get("review_targets", targetId)) as ReviewTarget | null;
+  if (!target) return null;
+  target.status = "posted"; target.postedUrl = postedUrl; target.postedAt = now();
+  await be.set("review_targets", targetId, target);
+  for (const id of postedIds) {
+    const rc = (await be.get("review_comments", id)) as ReviewComment | null;
+    if (rc) { rc.posted = true; await be.set("review_comments", id, rc); }
+  }
+  await addTrace("operator", "finding", `posted synthesized review to ${target.repo}#${target.prNumber} → ${postedUrl}`);
+  return target;
+}
+
+/* ---------- project-oriented impact rollup ---------- */
+// Reconcile the two repo namings: findings store a short name ("snare"), review targets store
+// "owner/repo" ("CorneliusHagmeister/snare"). Both collapse to the same key on the last segment.
+const projectKey = (repo: string) => slug((repo || "").split("/").pop() || repo);
+
+export async function getProjects(): Promise<Project[]> {
+  await maybeSeed();
+  const [repos, findings, targets, comments] = await Promise.all([
+    be.list("repos"), be.list("findings"), be.list("review_targets"), be.list("review_comments"),
+  ]) as [Repo[], Finding[], ReviewTarget[], ReviewComment[]];
+
+  const map = new Map<string, Project>();
+  const ensure = (repo: string, seed?: Partial<Project>): Project => {
+    const key = projectKey(repo);
+    let p = map.get(key);
+    if (!p) {
+      p = {
+        key, name: repo, url: undefined, language: undefined, contributors: [],
+        findings: { total: 0, reproduced: 0, analytical: 0, refuted: 0, overclaims: 0, patches: 0 },
+        review: { comments: 0, consensusPoints: 0, posted: 0 },
+        contributions: 0, lastActivity: "", events: [],
+      };
+      map.set(key, p);
+    }
+    if (seed) Object.assign(p, { ...seed, findings: p.findings, review: p.review, events: p.events, contributors: p.contributors });
+    return p;
+  };
+  const touch = (p: Project, ts: string) => { if (ts > p.lastActivity) p.lastActivity = ts; };
+  const addWho = (p: Project, who?: string) => { if (who && !p.contributors.includes(who)) p.contributors.push(who); };
+
+  // Seed from known repos so a project with no activity yet still appears.
+  for (const r of repos) ensure(r.name, { name: r.name, url: r.url, language: r.language });
+
+  // Findings
+  for (const f of findings) {
+    const p = ensure(f.repo);
+    p.findings.total++;
+    const over = f.claimed === "reproduced" && (f.tier === "analytical" || f.tier === "refuted");
+    if (f.tier === "reproduced") p.findings.reproduced++;
+    else if (f.tier === "analytical") p.findings.analytical++;
+    else if (f.tier === "refuted") p.findings.refuted++;
+    if (over) p.findings.overclaims++;
+    if (f.patch) p.findings.patches++;
+    p.contributions++; addWho(p, f.contributor); touch(p, f.createdAt);
+    p.events.push({
+      ts: f.createdAt,
+      kind: over ? "over-claim" : f.tier === "reproduced" ? "verified" : "finding",
+      text: over ? `over-claim rejected: "${f.title}"` : f.tier === "reproduced" ? `reproduced & ${f.patch ? "patched" : "confirmed"}: "${f.title}"` : `submitted: "${f.title}"`,
+      who: f.contributor, severity: f.severity,
+    });
+  }
+
+  // Review targets + their comments
+  const byTarget = new Map<string, ReviewComment[]>();
+  for (const c of comments) (byTarget.get(c.target) || byTarget.set(c.target, []).get(c.target)!).push(c);
+  for (const t of targets) {
+    const p = ensure(t.repo, { name: t.repo, url: `https://github.com/${t.repo}` });
+    const cs = byTarget.get(t.id) || [];
+    p.review.comments += cs.length;
+    p.review.prNumber = t.prNumber;
+    const agg = aggregate(cs, t);
+    const consensus = agg.clusters.filter((c) => c.consensus >= 2).length;
+    p.review.consensusPoints += consensus;
+    p.contributions += cs.length;
+    touch(p, t.addedAt);
+    for (const c of cs) {
+      addWho(p, c.contributor); touch(p, c.createdAt);
+      p.events.push({
+        ts: c.createdAt, kind: "review-comment", who: c.contributor, severity: c.severity,
+        text: `commented on ${c.path}${c.line != null ? ":" + c.line : ""} (${c.category}) — PR#${t.prNumber}`,
+      });
+    }
+    if (t.status === "posted" && t.postedUrl) {
+      p.review.posted++;
+      p.review.postedUrl = t.postedUrl;
+      touch(p, t.postedAt || t.addedAt);
+      p.events.push({
+        ts: t.postedAt || t.addedAt, kind: "review-posted", url: t.postedUrl,
+        text: `synthesized review posted to PR#${t.prNumber} (${cs.length} comments → ${consensus} consensus point${consensus === 1 ? "" : "s"})`,
+      });
+    }
+  }
+
+  const out = [...map.values()];
+  for (const p of out) {
+    p.events.sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
+    p.events = p.events.slice(0, 40);
+    if (!p.lastActivity) p.lastActivity = now();
+  }
+  // Most contributions first; ties broken by most recent activity.
+  out.sort((a, b) => b.contributions - a.contributions || String(b.lastActivity).localeCompare(String(a.lastActivity)));
+  return out;
+}
+
 /* ---------- full state for the dashboard ---------- */
 export async function getState() {
   await maybeSeed();
-  const [repos, work, findings, nodes, tracesDoc] = await Promise.all([
+  const [repos, work, findings, nodes, tracesDoc, reviewTargets, reviewWork, reviewComments] = await Promise.all([
     be.list("repos"), be.list("work_items"), be.list("findings"), be.list("nodes"), be.get("meta", "traces"),
+    be.list("review_targets"), be.list("review_work"), be.list("review_comments"),
   ]);
-  const traces: Trace[] = ((tracesDoc as any)?.items || []).slice(-120).reverse();
+  const traces: Trace[] = ((tracesDoc as any)?.items || []).slice(-600).reverse();
   const liveNodes = (nodes as Node[]).filter((n) => isLive(n.lastSeen));
   const stats = {
     nodesLive: liveNodes.length,
@@ -198,6 +430,10 @@ export async function getState() {
     confirmed: (findings as Finding[]).filter((f) => f.tier === "reproduced").length,
     overclaims: (findings as Finding[]).filter((f) => f.claimed === "reproduced" && (f.tier === "analytical" || f.tier === "refuted")).length,
     repos: (repos as Repo[]).length,
+    reviewComments: (reviewComments as ReviewComment[]).length,
+    reviewsPosted: (reviewTargets as ReviewTarget[]).filter((t) => t.status === "posted").length,
   };
-  return { repos, work, findings, nodes, traces, stats, serverTime: now() };
+  // The dashboard reads reviewTargets + reviewComments from here and fetches the clustered
+  // consensus separately from /api/review/aggregate (which re-runs only when a comment lands).
+  return { repos, work, findings, nodes, traces, stats, reviewTargets, reviewWork, reviewComments, serverTime: now() };
 }

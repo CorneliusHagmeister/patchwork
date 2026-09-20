@@ -16,6 +16,15 @@ export async function actor(req: Request): Promise<{ handle: string; cid: string
   return c ? { handle: c.handle, cid: c.cid || slug(c.handle) } : null;
 }
 
+/** Public origin of this deployment: PUBLIC_URL when set, else derived from the request. */
+export function baseFrom(req: Request): string {
+  if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/$/, "");
+  const h = req.headers;
+  const host = h.get("x-forwarded-host") || h.get("host") || new URL(req.url).host;
+  const proto = h.get("x-forwarded-proto") || (host.includes("localhost") || host.startsWith("127.") ? "http" : "https");
+  return `${proto}://${host}`;
+}
+
 export const preflight = () =>
   new Response(null, {
     status: 204,

@@ -1,17 +1,10 @@
+import { baseFrom } from "@/lib/api";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // Zero-install contribution path: returns a self-contained prompt (text/plain) that a
 // shell-capable agent (Claude Code, Codex, Cursor) can run directly — no skill, no MCP.
 //   claude -p "$(curl -s <base>/api/hunt-prompt?token=YOURTOKEN)"
-function baseFrom(req: Request): string {
-  if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/$/, "");
-  const h = req.headers;
-  const host = h.get("x-forwarded-host") || h.get("host") || new URL(req.url).host;
-  const proto = h.get("x-forwarded-proto") || (host.includes("localhost") || host.startsWith("127.") ? "http" : "https");
-  return `${proto}://${host}`;
-}
-
 export async function GET(req: Request) {
   const base = baseFrom(req);
   const token = new URL(req.url).searchParams.get("token") || "<PASTE_YOUR_TOKEN>";

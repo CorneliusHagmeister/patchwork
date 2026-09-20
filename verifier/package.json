@@ -9,8 +9,8 @@
     "check": "node --check verify.mjs && node --check worker.mjs"
   },
   "optionalDependencies": {
-    "@anthropic-ai/sdk": "^0.68.0",
-    "@e2b/code-interpreter": "^1.5.1",
-    "@trigger.dev/sdk": "^3.3.0"
+    "@anthropic-ai/sdk": "^0.127.0",
+    "@e2b/code-interpreter": "^2.8.0",
+    "@trigger.dev/sdk": "^4.6.3"
   }
 }

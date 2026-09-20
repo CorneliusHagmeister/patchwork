@@ -3,6 +3,7 @@
 // and flips the confirmed tier. This is the trust boundary: untrusted submissions in,
 // independently-reproduced verdicts out.
 import { verifyPov } from "./verify.mjs";
+import { streamTo } from "./stream.mjs";
 
 const URL = (process.env.PW_URL || "http://localhost:3000").replace(/\/$/, "");
 const CODE = process.env.PW_VERIFY_CODE || process.env.JOIN_CODE || "patchwork";
@@ -16,7 +17,8 @@ async function loop() {
     for (const f of pending) {
       attempted.add(f.id);
       console.log(`\n[verify] ${f.id} — ${f.title}`);
-      const { tier, log } = await verifyPov(f, { onLog: (l) => console.log("   " + l) });
+      const push = streamTo(URL, CODE);
+      const { tier, log } = await verifyPov(f, { onLog: (l) => { console.log("   " + l); push(l); } });
       const r = await fetch(URL + "/api/verify", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ id: f.id, tier, log, code: CODE }),

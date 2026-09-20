@@ -1,0 +1,4 @@
+# e2b template config — see verifier/e2b-template/e2b.Dockerfile for what it ships.
+template_name = "patchwork-rust"
+dockerfile = "e2b.Dockerfile"
+template_id = ""

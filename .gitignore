@@ -8,3 +8,9 @@ out
 .DS_Store
 relay/node_modules
 *.tsbuildinfo
+
+# playwright-mcp screenshots/snapshots
+.playwright-mcp/
+
+# per-session Next build dirs (NEXT_DIST_DIR)
+.next-*

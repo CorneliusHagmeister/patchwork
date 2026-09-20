@@ -64,6 +64,13 @@ Decision, routed by `oracle`: crash/panic/ASan → `memory-safety`/`panic-dos`; 
 ## Cloud path (e2b + trigger.dev)
 
 - Set `E2B_API_KEY` → sandboxes run in e2b instead of local Docker (per-finding, ephemeral).
+- Set `E2B_TEMPLATE_ID` → the e2b template to boot (the analogue of `PW_IMAGE` on the docker path).
+  The stock `base` template has **no Rust toolchain**, and PoVs run with `allowInternetAccess=false`,
+  so anything that compiles needs a template shipping the toolchain *and* a warm crate cache.
+  `verifier/e2b-template/` builds one for the seeded Rust targets: `e2b auth login && e2b template build`.
+  Marker/script PoVs (`echo`, `sh poc/run.sh`) run fine on `base` without it.
+- Progress streams live: `verifyPov({ onLog })` → `POST /api/verify {line, code}` → `verifier` traces
+  on the dashboard, so sandbox setup and the run appear as they happen (see `verifier/stream.mjs`).
 - `trigger/verify.ts` is a trigger.dev v3 task wrapping `verifyPov`. Deploy it with the trigger.dev CLI,
   then enqueue on submission by adding to `app/api/findings/route.ts` (guard on `process.env.TRIGGER_SECRET_KEY`):
   ```ts
