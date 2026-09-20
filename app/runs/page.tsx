@@ -22,6 +22,16 @@ export default function Runs() {
   const [s, setS] = useState<State>(EMPTY);
   const [open, setOpen] = useState<string | null>(null);
 
+  // Deep link from the dashboard's work queue: /runs#task-<id> opens that task.
+  useEffect(() => {
+    const h = typeof window !== "undefined" ? window.location.hash : "";
+    const m = h.match(/^#task-(.+)$/);
+    if (m) {
+      setOpen(m[1]);
+      setTimeout(() => document.getElementById("task-" + m[1])?.scrollIntoView({ behavior: "smooth", block: "center" }), 300);
+    }
+  }, []);
+
   const tick = async () => {
     try {
       const r = await fetch("/api/state", { cache: "no-store" });
@@ -53,7 +63,7 @@ export default function Runs() {
           const id = w.id;
           const isOpen = open === id;
           return (
-            <div key={id} className="panel" style={{ marginBottom: "0.5rem" }}>
+            <div key={id} id={"task-" + id} className="panel" style={{ marginBottom: "0.5rem", ...(isOpen ? { borderColor: "var(--consensus, #2f7)" } : {}) }}>
               <div
                 className="panel-head"
                 style={{ cursor: "pointer" }}
@@ -63,7 +73,8 @@ export default function Runs() {
                 onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setOpen(isOpen ? null : id); }}
               >
                 <span className="panel-title">
-                  {isOpen ? "▾" : "▸"} {w.claimedBy} · {w.repo}{w.target ? "/" + w.target : ""}
+                  {isOpen ? "▾" : "▸"} {w.claimedBy || "unclaimed"} · {w.repo}{w.target ? "/" + w.target : ""}
+                  {" "}<span className="badge">{w.status}</span>
                 </span>
                 <span className="panel-note">
                   <span className="badge">{w.lens}</span>{" "}
