@@ -40,7 +40,7 @@ const be: Backend = process.env.DATABASE_URL ? neonBackend(process.env.DATABASE_
 
 /* ---------- helpers ---------- */
 const now = () => new Date().toISOString();
-const slug = (s: string) => (s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 60) || "x");
+export const slug = (s: string) => (s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 60) || "x");
 const rid = () => Math.random().toString(36).slice(2, 10);
 const isLive = (iso?: string) => !!iso && Date.now() - new Date(iso).getTime() < 90_000;
 
@@ -51,9 +51,10 @@ export async function join(handle: string, location: string, code: string) {
   const h = (handle || "").trim().slice(0, 40);
   if (!h) return { ok: false as const, error: "Pick a handle." };
   const token = rid() + rid();
-  await be.set("contributors", token, { token, handle: h, location: (location || "").slice(0, 40), createdAt: now() });
-  await heartbeat(h, { location, status: "idle" });
-  return { ok: true as const, token, handle: h };
+  const cid = rid();   // public node id — safe to expose in /api/state, unlike the token
+  await be.set("contributors", token, { token, cid, handle: h, location: (location || "").slice(0, 40), createdAt: now() });
+  await heartbeat(cid, h, { location, status: "idle" });
+  return { ok: true as const, token, cid, handle: h };
 }
 export async function authed(token: string) {
   if (!token) return null;
@@ -80,19 +81,19 @@ export async function addRepo(name: string, url: string, language: string, targe
 }
 
 /* ---------- claim a work item ---------- */
-export async function claimWork(handle: string) {
+export async function claimWork(cid: string, handle: string) {
   const items = (await be.list("work_items")) as WorkItem[];
   const next = items.filter((w) => w.status === "queued").sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))[0];
   if (!next) return null;
   next.status = "running"; next.claimedBy = handle; next.claimedAt = now(); next.updatedAt = now();
   await be.set("work_items", next.id, next);
-  await heartbeat(handle, { status: "running", currentWork: `${next.repo}${next.target ? " · " + next.target : ""} · ${next.lens}` });
+  await heartbeat(cid, handle, { status: "running", currentWork: `${next.repo}${next.target ? " · " + next.target : ""} · ${next.lens}` });
   await addTrace(handle, "status", `claimed ${next.repo}${next.target ? "/" + next.target : ""} — lens ${next.lens} (${next.oracle})`);
   return next;
 }
 
 /* ---------- submit a finding ---------- */
-export async function submitFinding(handle: string, f: Partial<Finding> & { workItem?: string }) {
+export async function submitFinding(cid: string, handle: string, f: Partial<Finding> & { workItem?: string }) {
   const id = "f-" + rid();
   const finding: Finding = {
     id, repo: f.repo || "unknown", workItem: f.workItem, title: (f.title || "untitled").slice(0, 200),
@@ -105,7 +106,7 @@ export async function submitFinding(handle: string, f: Partial<Finding> & { work
     const wi = (await be.get("work_items", f.workItem)) as WorkItem | null;
     if (wi) { wi.status = "done"; wi.findingId = id; wi.updatedAt = now(); await be.set("work_items", wi.id, wi); }
   }
-  const node = (await be.get("nodes", slug(handle))) as Node | null;
+  const node = (await be.get("nodes", cid)) as Node | null;
   if (node) { node.findingsCount = (node.findingsCount || 0) + 1; node.workDone = (node.workDone || 0) + 1; node.status = "idle"; node.lastSeen = now(); await be.set("nodes", node.id, node); }
   await addTrace(handle, "finding", `submitted "${finding.title}" (${finding.severity}, claimed ${finding.claimed}) — awaiting central verify`);
   return finding;
@@ -122,8 +123,8 @@ export async function verifyFinding(id: string, tier: Tier, log?: string) {
 }
 
 /* ---------- node heartbeat ---------- */
-export async function heartbeat(handle: string, patch: Partial<Node>) {
-  const id = slug(handle);
+export async function heartbeat(cid: string, handle: string, patch: Partial<Node>) {
+  const id = cid;   // one node per contributor, so same-handle joins never collide
   const prev = (await be.get("nodes", id)) as Node | null;
   const node: Node = {
     id, handle, location: patch.location ?? prev?.location ?? "", status: (patch.status as any) ?? prev?.status ?? "idle",

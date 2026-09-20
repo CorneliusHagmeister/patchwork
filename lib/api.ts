@@ -1,4 +1,4 @@
-import { authed } from "./store";
+import { authed, slug } from "./store";
 
 export const json = (data: any, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -7,11 +7,13 @@ export const json = (data: any, status = 200) =>
   });
 
 /** Resolve the contributor from the Authorization: Bearer <token> header. */
-export async function actor(req: Request): Promise<{ handle: string } | null> {
+export async function actor(req: Request): Promise<{ handle: string; cid: string } | null> {
   const auth = req.headers.get("authorization") || "";
   const token = auth.replace(/^Bearer\s+/i, "").trim();
   const c = await authed(token);
-  return c ? { handle: c.handle } : null;
+  // cid is the public per-contributor node id. Contributors minted before cid existed
+  // fall back to slug(handle) so their existing node keeps working.
+  return c ? { handle: c.handle, cid: c.cid || slug(c.handle) } : null;
 }
 
 export const preflight = () =>

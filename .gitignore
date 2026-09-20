@@ -7,3 +7,4 @@ out
 *.log
 .DS_Store
 relay/node_modules
+*.tsbuildinfo
