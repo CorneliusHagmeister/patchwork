@@ -32,7 +32,9 @@ export async function verifyPov(finding, opts = {}) {
 
   let tier = result ? decideTier(finding, pov, result, say) : "analytical";
 
-  if (process.env.ANTHROPIC_API_KEY) {
+  // Run the judge when either backend is available: an OSS model via Superlinked (SIE_URL)
+  // or Anthropic. judge() picks the backend; this only decides whether to critique at all.
+  if (process.env.SIE_URL || process.env.ANTHROPIC_API_KEY) {
     try {
       const j = await judge(finding, pov, result, say);
       if (j?.verdict) {
@@ -135,8 +137,6 @@ async function runE2B(pov, say) {
 }
 
 async function judge(finding, pov, result, say) {
-  const { default: Anthropic } = await import("@anthropic-ai/sdk");
-  const client = new Anthropic();
   const out = result ? (result.stdout + "\n" + result.stderr).slice(-4000) : "(not executed)";
   const system =
     "You are the central verifier for a vulnerability-hunting platform. Given a claimed finding, its oracle " +
@@ -144,11 +144,47 @@ async function judge(finding, pov, result, say) {
     "'reproduced' only if the output demonstrates the bug triggering per the oracle; 'refuted' if it clearly did not; " +
     "'analytical' if plausible but not demonstrated. Reply with ONLY JSON: {\"verdict\":\"reproduced|refuted|analytical\",\"reason\":\"one sentence\"}.";
   const user = `oracle: ${finding.oracle}\ntitle: ${finding.title}\nclaimed: ${finding.claimed}\npov.cmd: ${pov.cmd || "(none)"}\npov.marker: ${pov.marker || "(none)"}\nnotes: ${pov.notes || ""}\n--- sandbox output tail ---\n${out}`;
+
+  // Backend selection. Prefer an open-source model served over Superlinked's
+  // OpenAI-compatible chat endpoint when SIE_URL is set; fall back to Anthropic.
+  // Either way the sandbox result — not the model — is the trust anchor: the judge
+  // can downgrade a claim but only confirms 'reproduced' when the sandbox ran (see caller).
+  const parse = (text) => { const m = (text || "").match(/\{[\s\S]*\}/); return m ? JSON.parse(m[0]) : null; };
+  const useSie = process.env.PW_JUDGE_BACKEND
+    ? process.env.PW_JUDGE_BACKEND === "sie"
+    : !!process.env.SIE_URL;
+
+  if (useSie) {
+    try {
+      const model = process.env.SIE_CHAT_MODEL || "Qwen/Qwen3.8-27B-FP8";
+      say(`judge: ${model} via Superlinked`);
+      const r = await fetch(process.env.SIE_URL.replace(/\/$/, "") + "/v1/chat/completions", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + (process.env.SIE_API_KEY || "sie") },
+        body: JSON.stringify({
+          model, max_tokens: 400, temperature: 0,
+          messages: [{ role: "system", content: system }, { role: "user", content: user }],
+        }),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        const v = parse(j?.choices?.[0]?.message?.content);
+        if (v) return v;
+        say("judge: SIE returned no parseable verdict");
+      } else {
+        say(`judge: SIE ${r.status}, falling back`);
+      }
+    } catch (e) {
+      say("judge: SIE unreachable, falling back — " + (e?.message || e));
+    }
+  }
+
+  if (!process.env.ANTHROPIC_API_KEY) return null;
+  const { default: Anthropic } = await import("@anthropic-ai/sdk");
+  const client = new Anthropic();
   const msg = await client.messages.create({
     model: process.env.PW_JUDGE_MODEL || "claude-sonnet-5",
     max_tokens: 400, system, messages: [{ role: "user", content: user }],
   });
-  const text = (msg.content || []).map((b) => b.text || "").join("");
-  const m = text.match(/\{[\s\S]*\}/);
-  return m ? JSON.parse(m[0]) : null;
+  return parse((msg.content || []).map((b) => b.text || "").join(""));
 }

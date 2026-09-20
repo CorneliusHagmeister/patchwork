@@ -1,7 +1,8 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { useLive } from "@/lib/useLive";
 import type { RepoIntel } from "@/lib/github";
 
 type Payload = {
@@ -76,6 +77,9 @@ export default function RepoPage() {
     }
   }
 
+  // Kept in a ref so the live subscription can fire it without re-subscribing on every render.
+  const refetch = useRef<() => void>(() => {});
+
   useEffect(() => {
     if (!name) return;
     let alive = true;
@@ -86,10 +90,18 @@ export default function RepoPage() {
         if (alive) { setD(j); setLoading(false); }
       } catch { if (alive) setLoading(false); }
     };
+    refetch.current = tick;
     tick();
+    // Poll is the fallback; the relay is what makes a claim visibly drop out of the queue.
     const iv = setInterval(tick, 5000);
     return () => { alive = false; clearInterval(iv); };
   }, [name]);
+
+  // Any mutation anywhere pushes a "state" frame. Claiming a work item is one, so the queue
+  // empties as agents pick items up rather than on the next 5s poll.
+  useLive((msg) => {
+    if (msg.type === "state" || msg.type === "trace") refetch.current();
+  });
 
   if (loading) return <div className="shell"><p className="empty">Loading {name}…</p></div>;
   if (!d || d.error) {
@@ -204,7 +216,7 @@ export default function RepoPage() {
                 const state = tier === "reproduced" ? "ok" : (tier === "refuted" || over) ? "rejected" : "pending";
                 const label = tier === "reproduced" ? "Reproduced" : over ? "Rejected" : tier === "refuted" ? "Refuted" : "Verifying";
                 return (
-                  <article className="finding" key={f.id}>
+                  <Link className="finding is-link" key={f.id} href={`/runs#finding-${f.id}`}>
                     <span className={"sev sev-" + (f.severity || "info")} aria-label={`${f.severity || "info"} severity`} />
                     <div>
                       <h3 className="finding-title">{f.title}</h3>
@@ -216,7 +228,7 @@ export default function RepoPage() {
                       </div>
                     </div>
                     <span className={"verdict verdict-" + state}>{label}</span>
-                  </article>
+                  </Link>
                 );
               })
             )}

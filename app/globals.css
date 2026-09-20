@@ -756,3 +756,80 @@ a.person:hover { background: var(--paper); text-decoration: none; }
   .stage:first-child { border-top: 0; }
   .thesis p { font-size: var(--t-md); }
 }
+
+/* ---- quorum: how much of the fan-out has come back, and whether it can publish ---- */
+
+.quorum { margin-top: 1rem; padding-top: 0.875rem; border-top: var(--rule); }
+
+.quorum-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.quorum-state { font-size: var(--t-sm); font-weight: 600; }
+
+.quorum-lenses {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.875rem;
+}
+
+.quorum-lens { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.quorum-name { font-size: var(--t-xs); color: var(--graphite); }
+.quorum-lens.is-met .quorum-name { color: var(--ink); }
+
+.quorum-pips { display: flex; gap: 2px; flex: none; }
+.quorum-pips i { width: 7px; height: 7px; border-radius: 50%; background: var(--paper-sunk); border: 1px solid var(--hairline); }
+.quorum-pips i.on { background: var(--consensus); border-color: var(--consensus); }
+
+.quorum-act { display: flex; align-items: center; gap: 0.875rem; flex-wrap: wrap; }
+
+/* A queue row that leads somewhere should say so. */
+a.queue-item { display: block; color: var(--ink); }
+a.queue-item:hover { background: var(--paper); text-decoration: none; }
+a.queue-item:hover .queue-subject { color: var(--consensus); }
+
+/* Findings lead to their evidence — the PoV, the verifier's re-run, the patch. */
+a.finding { color: var(--ink); }
+a.finding:hover { background: var(--paper); text-decoration: none; }
+a.finding:hover .finding-title { color: var(--consensus); }
+
+/* ---- copy-a-command ---- */
+
+.copyblock {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.copyblock:has(> button:only-child) { grid-template-columns: auto; justify-content: start; }
+
+.copyblock-text {
+  font-family: var(--mono);
+  font-size: var(--t-xs);
+  background: var(--paper-sunk);
+  border: var(--rule);
+  border-radius: 6px;
+  padding: 0.55rem 0.625rem;
+  overflow-x: auto;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.more > summary {
+  font-size: var(--t-xs);
+  color: var(--graphite);
+  cursor: pointer;
+  list-style: none;
+  padding: 0.25rem 0;
+}
+
+.more > summary::-webkit-details-marker { display: none; }
+.more > summary::before { content: "+ "; }
+.more[open] > summary::before { content: "– "; }
+.more-body { display: grid; gap: 0.5rem; padding: 0.5rem 0 0.25rem; }

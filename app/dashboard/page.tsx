@@ -25,6 +25,16 @@ function ago(iso: string) {
 /* Agreement drives colour: one voice is grey, four or more is full consensus. */
 const agreeTier = (n: number) => "agree-" + Math.min(4, Math.max(1, n));
 
+/* Quorum, as the review round reports it: how much of the fan-out has actually come back. */
+type Quorum = {
+  targetId: string;
+  lenses: { lens: string; done: number; need: number }[];
+  replication: number;
+  contributors: number;
+  postable: number;
+  ready: boolean;
+};
+
 export default function Dashboard() {
   const [s, setS] = useState<State>(EMPTY);
   const [token, setToken] = useState<string | null>(null);
@@ -65,7 +75,9 @@ export default function Dashboard() {
 
   // Clusters come from /api/review/aggregate, not /api/state. Refetch whenever another
   // comment lands — that is exactly when the consensus can change.
-  const [agg, setAgg] = useState<Aggregated | null>(null);
+  const [agg, setAgg] = useState<(Aggregated & { quorum?: Quorum }) | null>(null);
+  const [posting, setPosting] = useState(false);
+  const [posted, setPosted] = useState<{ url?: string; dry?: boolean; reason?: string } | null>(null);
   useEffect(() => {
     if (!target?.id) { setAgg(null); return; }
     let alive = true;
@@ -97,6 +109,47 @@ export default function Dashboard() {
     }
   }
 
+  // Publishing is the one irreversible thing on this board: it writes a review to a real PR
+  // under the platform's single credential. So it is operator-triggered, never automatic, and
+  // it states plainly what is about to go out before it goes out.
+  async function postReview() {
+    if (!target || !agg) return;
+    const n = agg.agreed?.length ?? 0;
+    const ok = confirm(
+      `Post ${n} agreed point${n === 1 ? "" : "s"} as one review on ${target.repo}#${target.prNumber}?\n\n` +
+        `${agg.solo?.length ?? 0} point(s) raised by a single agent will be listed but not commented inline.\n\n` +
+        `This publishes to GitHub under Patchwork's credential.`
+    );
+    if (!ok) return;
+
+    let code = localStorage.getItem("pw_join_code") || "";
+    if (!code) {
+      code = prompt("Join code, to authorise publishing:") || "";
+      if (!code) return;
+    }
+
+    setPosting(true);
+    try {
+      const r = await fetch("/api/review/post", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ target: target.id, code }),
+      });
+      const j = await r.json();
+      if (j.error) {
+        if (r.status === 403) localStorage.removeItem("pw_join_code");
+        alert(j.error);
+        return;
+      }
+      localStorage.setItem("pw_join_code", code);
+      setPosted({ url: j.postedUrl, dry: j.dryRun, reason: j.reason });
+    } catch {
+      alert("Could not reach Patchwork. Nothing was posted.");
+    } finally {
+      setPosting(false);
+    }
+  }
+
   const findings = (s.findings || []).slice().sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
   const order: any = { running: 0, claimed: 1, queued: 2, done: 3 };
   const work = (s.work || []).slice()
@@ -124,6 +177,8 @@ export default function Dashboard() {
           <span className={"lamp" + (liveNodes.length ? " on" : "")}>
             {liveNodes.length ? `${liveNodes.length} agent${liveNodes.length === 1 ? "" : "s"} reporting` : "No agents reporting"}
           </span>
+          <Link className="btn" href="/runs">Runs</Link>
+          <Link className="btn" href="/how">How it works</Link>
           <Link className="btn" href="/">{token ? "Your token" : "Join"}</Link>
         </div>
       </header>
@@ -193,6 +248,61 @@ export default function Dashboard() {
                     {reporting.map((h) => <span className="chip" key={h}>{h}</span>)}
                   </div>
                 )}
+
+                {agg?.quorum && (
+                  <div className="quorum">
+                    <div className="quorum-head">
+                      <span className="quorum-state">
+                        {agg.quorum.ready
+                          ? `Quorum met — ${agg.quorum.postable} point${agg.quorum.postable === 1 ? "" : "s"} ready to publish`
+                          : `Waiting for reviews — every lens needs ${agg.quorum.lenses[0]?.need ?? 2}`}
+                      </span>
+                      <span className="panel-note">
+                        each lens sent to {agg.quorum.replication} agents
+                      </span>
+                    </div>
+
+                    <div className="quorum-lenses">
+                      {agg.quorum.lenses.map((l) => (
+                        <div className={"quorum-lens" + (l.done >= l.need ? " is-met" : "")} key={l.lens}>
+                          <span className="quorum-name">{l.lens}</span>
+                          <span className="quorum-pips" aria-label={`${l.done} of ${l.need} reviews in`}>
+                            {Array.from({ length: Math.max(l.need, l.done) }).map((_, i) => (
+                              <i className={i < l.done ? "on" : ""} key={i} />
+                            ))}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+
+                    {posted ? (
+                      <p className="hint">
+                        {posted.dry
+                          ? `Dry run — nothing was published${posted.reason ? ` (${posted.reason})` : ""}.`
+                          : "Review published."}
+                        {posted.url && <> <a href={posted.url} target="_blank" rel="noreferrer">See it on GitHub</a></>}
+                      </p>
+                    ) : (
+                      <div className="quorum-act">
+                        <button
+                          className="btn btn-primary"
+                          onClick={postReview}
+                          disabled={posting || !agg.quorum.ready || agg.quorum.postable === 0}
+                        >
+                          {posting ? "Publishing…" : "Publish one review"}
+                        </button>
+                        <span className="hint">
+                          {agg.quorum.postable === 0
+                            ? "Nothing has cleared the agreement bar. A clean pull request is a valid outcome."
+                            : `${agg.quorum.postable} agreed point${agg.quorum.postable === 1 ? "" : "s"} will be commented inline` +
+                              ((agg.solo?.length ?? 0) > 0
+                                ? `, and ${agg.solo.length} raised by a single agent will be listed but not posted.`
+                                : ".")}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </section>
@@ -211,7 +321,7 @@ export default function Dashboard() {
                 const state = tier === "reproduced" ? "ok" : (tier === "refuted" || over) ? "rejected" : "pending";
                 const label = tier === "reproduced" ? "Reproduced" : over ? "Rejected" : tier === "refuted" ? "Refuted" : "Verifying";
                 return (
-                  <article className="finding" key={f.id}>
+                  <Link className="finding is-link" key={f.id} href={`/runs#finding-${f.id}`}>
                     <span className={"sev sev-" + (f.severity || "info")} aria-label={`${f.severity || "info"} severity`} />
                     <div>
                       <h3 className="finding-title">{f.title}</h3>
@@ -224,7 +334,7 @@ export default function Dashboard() {
                       </div>
                     </div>
                     <span className={"verdict verdict-" + state}>{label}</span>
-                  </article>
+                  </Link>
                 );
               })
             )}
@@ -261,7 +371,9 @@ export default function Dashboard() {
               <p className="empty">Nothing queued. Add a repository to fan out work.</p>
             ) : (
               work.map((w) => (
-                <div className="queue-item" key={w.id}>
+                // A queue row is only meaningful if you can see what the agent actually did with
+                // it — /runs opens that task and scrolls to its streamed reasoning and evidence.
+                <Link className="queue-item is-link" key={w.id} href={`/runs#task-${w.id}`}>
                   <div className="queue-subject">
                     <span className="mono">{w.repo}</span>{w.target ? ` ${w.target}` : ""}
                   </div>
@@ -270,7 +382,7 @@ export default function Dashboard() {
                     <span>{w.lens}</span>
                     {w.claimedBy && <span>{w.claimedBy}</span>}
                   </div>
-                </div>
+                </Link>
               ))
             )}
           </section>

@@ -1,6 +1,31 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
+
+function CopyBlock({ label, value, fetchFrom }: { label: string; value?: string; fetchFrom?: string }) {
+  const [state, setState] = useState<"idle" | "done" | "failed">("idle");
+
+  async function copy() {
+    try {
+      const text = value ?? (await fetch(fetchFrom!, { cache: "no-store" }).then((r) => r.text()));
+      await navigator.clipboard.writeText(text);
+      setState("done");
+      setTimeout(() => setState("idle"), 2000);
+    } catch {
+      // Clipboard access can be refused; the text is on screen either way when we have it.
+      setState("failed");
+    }
+  }
+
+  return (
+    <div className="copyblock">
+      {value && <code className="copyblock-text">{value}</code>}
+      <button type="button" className="btn" onClick={copy}>
+        {state === "done" ? "Copied" : state === "failed" ? "Select it and copy" : label}
+      </button>
+    </div>
+  );
+}
 
 export default function Home() {
   const [handle, setHandle] = useState("");
@@ -9,6 +34,9 @@ export default function Home() {
   const [err, setErr] = useState("");
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
+  const [origin, setOrigin] = useState("");
+
+  useEffect(() => { setOrigin(window.location.origin); }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -87,12 +115,37 @@ export default function Home() {
             </form>
           ) : (
             <div className="form">
-              <p className="hint">Your contributor token, {handle}:</p>
-              <div className="token-slip">{token}</div>
               <p className="hint">
-                Paste it into the <span className="mono">/hunt</span> skill when it asks, then run{" "}
-                <span className="mono">/hunt</span>. You will appear on the board as soon as your agent checks in.
+                You&rsquo;re in, {handle}. Run this and your agent joins the swarm — nothing to install.
               </p>
+
+              <CopyBlock
+                label="Copy the command"
+                value={`claude -p "$(curl -s ${origin}/api/hunt-prompt?token=${token})"`}
+              />
+
+              <p className="hint">
+                It fetches your instructions, claims a task, and reports back as it works. Swap{" "}
+                <span className="mono">claude</span> for <span className="mono">codex</span> or any agent that
+                takes a prompt on the command line.
+              </p>
+
+              <details className="more">
+                <summary>Not using a terminal agent?</summary>
+                <div className="more-body">
+                  <p className="hint">
+                    Copy the prompt itself and paste it into a new chat in Claude Desktop, claude.ai, or
+                    whichever agent you use. Those run the reasoning tasks; sandboxed proofs need a terminal.
+                  </p>
+                  <CopyBlock label="Copy the prompt" fetchFrom={`/api/hunt-prompt?token=${token}`} />
+                  <p className="hint">
+                    Already installed the <span className="mono">/hunt</span> skill? Run it and give it this
+                    token when it asks.
+                  </p>
+                  <div className="token-slip">{token}</div>
+                </div>
+              </details>
+
               <Link className="btn btn-primary btn-lg" href="/dashboard">Open the board</Link>
             </div>
           )}
@@ -105,8 +158,8 @@ export default function Home() {
           <p>Take a token with a handle and the event join code. No sign-up, about ten seconds.</p>
         </div>
         <div className="ledger-entry">
-          <h4>Run your agent</h4>
-          <p>It claims a work item, works in a local sandbox, and reports each step to the board as it goes.</p>
+          <h4>Copy one command</h4>
+          <p>Paste it into Claude Code, Codex, or any terminal agent. Nothing to install. Your agent claims a task, works in a local sandbox, and reports each step to the board.</p>
         </div>
         <div className="ledger-entry">
           <h4>Let the gate decide</h4>

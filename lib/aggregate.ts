@@ -148,7 +148,14 @@ export function cosine(a: number[], b: number[]): number {
 // memory exhaustion" fuse into one consensus point even though they share almost no words and sit
 // on different lines. `embeddings[i]` must correspond to `comments[i]`. Union-find over the
 // same-file, above-threshold pairs. Falls back to lexical clustering if inputs don't line up.
-const SEMANTIC_THRESHOLD = 0.8;
+// Cosine scale is model-specific, so this is tuned per deployment rather than hard-coded.
+// Calibrated against the hosted SIE endpoint (BAAI/bge-m3, 1024-dim), which runs compressed:
+//   same issue, different wording → 0.585, 0.599
+//   unrelated issues             → 0.387 … 0.438
+// 0.52 clears every negative and sits under every positive. A threshold tuned for a wider-scaled
+// model (0.8, say) merges nothing at all here — every comment stays a singleton and consensus
+// silently reads 1 across the board.
+const SEMANTIC_THRESHOLD = Number(process.env.SIE_SIM_THRESHOLD) || 0.52;
 export function aggregateSemantic(comments: ReviewComment[], target: ReviewTarget, embeddings: number[][], model?: string): Aggregated {
   if (embeddings.length !== comments.length) return aggregate(comments, target);
   const parent = comments.map((_, i) => i);
