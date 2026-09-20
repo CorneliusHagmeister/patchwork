@@ -36,7 +36,7 @@ It polls `/api/state`, verifies every `pending` finding, and flips its tier live
 | `PW_URL` | platform base URL (default `http://localhost:3000`) |
 | `PW_VERIFY_CODE` | must equal the platform's `JOIN_CODE` (guards `/api/verify`) |
 | `PW_SANDBOX` | `docker` (default) · `e2b` (if `E2B_API_KEY` set) · `none` (judge/heuristic only) |
-| `E2B_API_KEY` | use e2b cloud sandboxes instead of local Docker |
+| `E2B_API_KEY` | use e2b cloud sandboxes instead of local Docker (also auto-selects the `e2b` backend) |
 | `ANTHROPIC_API_KEY` | enable the LLM judge (adjudicates the trace; confirms/downgrades) |
 | `PW_JUDGE_MODEL` | judge model (default `claude-sonnet-5`) |
 | `PW_IMAGE` | Docker image for the sandbox (default `rust:1-slim`); a **prebuilt repo image makes flips fast** |
@@ -81,3 +81,21 @@ the Docker/e2b path for rigor.
 Every run is `--network=none`, memory- and time-capped, in a throwaway workdir, deleted after. Never run
 the verifier with credentials the PoV could reach. The sandbox executes attacker-influenced code by design
 — keep it isolated from anything that matters.
+
+## Sandbox trust model
+
+Both backends split **fetch** from **execute**, and only the fetch is trusted with a network:
+
+1. The repo is cloned and the PoV files are written **on the host** (`stage()`), where network
+   access is ours, not the contributor's.
+2. The contributor's command then runs against that tree with **no network of its own** —
+   `--network=none` under docker, `allowInternetAccess: false` under e2b.
+
+The e2b default is `allowInternetAccess: true`, so this must be set explicitly; without it,
+contributor-submitted code executes with network egress. The e2b path uploads the staged tree as a
+single archive rather than cloning inside the sandbox, which is what lets the network stay off.
+
+Known differences between the backends: docker caps memory (`--memory`/`--memory-swap`, so the
+`resource-exhaustion` oracle can observe a real OOM), while e2b sizing is template-level — an OOM
+under e2b is inferred from exit code 137 / output text and is less reliable. Prefer docker when the
+oracle depends on the memory cap.

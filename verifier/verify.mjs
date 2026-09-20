@@ -61,15 +61,23 @@ function decideTier(finding, pov, result, say) {
   return "analytical";
 }
 
-async function runDocker(pov, say) {
+// Fetch the repo and drop the PoV files on the HOST, where network access is
+// trusted. Both backends then execute the untrusted command against this tree
+// with no network of their own — the fetch/execute split is the whole point.
+async function stage(pov, say) {
   const dir = await mkdtemp(join(tmpdir(), "pw-"));
+  if (pov.repoUrl) {
+    say(`cloning ${pov.repoUrl}${pov.repoRef ? "@" + pov.repoRef : ""} (host-side)`);
+    try { await exec("git", ["clone", "--depth", "1", ...(pov.repoRef ? ["--branch", pov.repoRef] : []), pov.repoUrl, dir], { timeout: 120000 }); }
+    catch { await exec("git", ["clone", pov.repoUrl, dir]); if (pov.repoRef) await exec("git", ["-C", dir, "checkout", pov.repoRef]); }
+  }
+  for (const f of pov.files || []) { const p = join(dir, f.path); await mkdir(dirname(p), { recursive: true }); await writeFile(p, f.content); say(`wrote ${f.path}`); }
+  return dir;
+}
+
+async function runDocker(pov, say) {
+  const dir = await stage(pov, say);
   try {
-    if (pov.repoUrl) {
-      say(`cloning ${pov.repoUrl}${pov.repoRef ? "@" + pov.repoRef : ""}`);
-      try { await exec("git", ["clone", "--depth", "1", ...(pov.repoRef ? ["--branch", pov.repoRef] : []), pov.repoUrl, dir], { timeout: 120000 }); }
-      catch { await exec("git", ["clone", pov.repoUrl, dir]); if (pov.repoRef) await exec("git", ["-C", dir, "checkout", pov.repoRef]); }
-    }
-    for (const f of pov.files || []) { const p = join(dir, f.path); await mkdir(dirname(p), { recursive: true }); await writeFile(p, f.content); say(`wrote ${f.path}`); }
     const image = pov.image || process.env.PW_IMAGE || "rust:1-slim";
     const mem = pov.memMb || 512, to = pov.timeoutSec || 180;
     say(`docker run ${image} (mem ${mem}m, --network=none, ${to}s)`);
@@ -86,19 +94,40 @@ async function runDocker(pov, say) {
   } finally { await rm(dir, { recursive: true, force: true }).catch(() => {}); }
 }
 
+// Cloud sandbox. Mirrors the docker path's trust model: the repo is fetched on
+// the host, uploaded as a single archive, and the untrusted command then runs
+// with `allowInternetAccess: false` — the SDK defaults that to TRUE, which would
+// otherwise give contributor-submitted code network egress.
 async function runE2B(pov, say) {
   const { Sandbox } = await import("@e2b/code-interpreter"); // needs E2B_API_KEY
+  const dir = await stage(pov, say);
   const to = (pov.timeoutSec || 180) * 1000;
-  const sbx = await Sandbox.create({ timeoutMs: to });
+  let sbx = null;
   try {
-    const base = pov.repoUrl ? "repo" : ".";
-    if (pov.repoUrl) { say(`cloning ${pov.repoUrl}${pov.repoRef ? "@" + pov.repoRef : ""}`); await sbx.commands.run(`git clone ${pov.repoUrl} repo && ${pov.repoRef ? `cd repo && git checkout ${pov.repoRef}` : "true"}`, { timeoutMs: to }); }
-    for (const f of pov.files || []) { await sbx.files.write(`${base}/${f.path}`, f.content); say(`wrote ${f.path}`); }
+    const tar = join(tmpdir(), `pw-${Date.now()}.tar.gz`);
+    await exec("tar", ["-czf", tar, "-C", dir, "."]);
+    // Sandbox outlives the command so a timed-out run still yields its output.
+    sbx = await Sandbox.create({ timeoutMs: to + 60000, allowInternetAccess: false });
+    say("e2b sandbox created (allowInternetAccess=false)");
+    const { readFile } = await import("node:fs/promises");
+    await sbx.files.write("/home/user/work.tar.gz", await readFile(tar));
+    await rm(tar, { force: true }).catch(() => {});
+    await sbx.commands.run("mkdir -p /home/user/work && tar -xzf /home/user/work.tar.gz -C /home/user/work");
     say(`e2b run: ${pov.cmd}`);
     const start = Date.now();
-    const r = await sbx.commands.run(`cd ${base} && ${pov.cmd}`, { timeoutMs: to }).catch((e) => e.result || e);
-    return { exitCode: r.exitCode ?? (r.error ? 1 : 0), stdout: r.stdout || "", stderr: (r.stderr || "") + (r.error ? ` [${r.error}]` : ""), durationMs: Date.now() - start, oom: false };
-  } finally { await sbx.kill?.().catch(() => {}); }
+    const r = await sbx.commands.run(`cd /home/user/work && ${pov.cmd}`, { timeoutMs: to })
+      .catch((e) => e.result || e);
+    const stdout = r.stdout || "", stderr = (r.stderr || "") + (r.error ? ` [${r.error}]` : "");
+    return {
+      exitCode: r.exitCode ?? (r.error ? 1 : 0),
+      stdout, stderr,
+      durationMs: Date.now() - start,
+      oom: r.exitCode === 137 || /out of memory|Killed/i.test(stdout + stderr),
+    };
+  } finally {
+    await sbx?.kill?.().catch(() => {});
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 async function judge(finding, pov, result, say) {

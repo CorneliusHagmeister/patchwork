@@ -10,7 +10,7 @@
   },
   "optionalDependencies": {
     "@anthropic-ai/sdk": "^0.68.0",
-    "@e2b/code-interpreter": "^1.0.0",
+    "@e2b/code-interpreter": "^1.5.1",
     "@trigger.dev/sdk": "^3.3.0"
   }
 }
