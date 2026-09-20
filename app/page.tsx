@@ -36,7 +36,15 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [origin, setOrigin] = useState("");
 
-  useEffect(() => { setOrigin(window.location.origin); }, []);
+  // Hydrate an existing token/handle so a returning, already-joined visitor sees their
+  // command to copy instead of the join form (which would mint a second token).
+  useEffect(() => {
+    setOrigin(window.location.origin);
+    const t = localStorage.getItem("pw_token");
+    if (t) setToken(t);
+    const h = localStorage.getItem("pw_handle");
+    if (h) setHandle(h);
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
