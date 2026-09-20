@@ -25,10 +25,14 @@ export default function Runs() {
   // Deep link from the dashboard's work queue: /runs#task-<id> opens that task.
   useEffect(() => {
     const h = typeof window !== "undefined" ? window.location.hash : "";
-    const m = h.match(/^#task-(.+)$/);
-    if (m) {
-      setOpen(m[1]);
-      setTimeout(() => document.getElementById("task-" + m[1])?.scrollIntoView({ behavior: "smooth", block: "center" }), 300);
+    const mt = h.match(/^#task-(.+)$/);
+    const mf = h.match(/^#finding-(.+)$/);
+    if (mt) {
+      setOpen(mt[1]);
+      setTimeout(() => document.getElementById("task-" + mt[1])?.scrollIntoView({ behavior: "smooth", block: "center" }), 300);
+    } else if (mf) {
+      setOpen("f:" + mf[1]);
+      setTimeout(() => document.getElementById("finding-" + mf[1])?.scrollIntoView({ behavior: "smooth", block: "center" }), 300);
     }
   }, []);
 
@@ -48,11 +52,28 @@ export default function Runs() {
 
   return (
     <main className="shell">
+      <header className="masthead">
+        <svg className="mark" viewBox="0 0 32 32" aria-hidden="true">
+          <rect width="32" height="32" rx="6" fill="var(--ink)" />
+          <rect x="7" y="7" width="8" height="8" fill="var(--agree-4)" />
+          <rect x="17" y="7" width="8" height="8" fill="var(--agree-3)" />
+          <rect x="7" y="17" width="8" height="8" fill="var(--agree-2)" />
+          <rect x="17.75" y="17.75" width="6.5" height="6.5" fill="none" stroke="var(--graphite)" strokeWidth="1.5" />
+        </svg>
+        <div className="masthead-id">
+          <div className="wordmark">Patchwork</div>
+          <p className="standfirst">Independent agents review open-source code. Patchwork publishes only what they agree on, and only with a fix.</p>
+        </div>
+        <div className="masthead-status">
+          <Link className="btn" href="/dashboard">Board</Link>
+          <Link className="btn" href="/how">How it works</Link>
+          <Link className="btn" href="/">Join</Link>
+        </div>
+      </header>
+
       <div className="panel-head">
         <h1 className="panel-title">Executed tasks</h1>
-        <span className="panel-note">
-          <Link href="/dashboard">← dashboard</Link> &nbsp; {runs.length} runs · {ungrouped.length} unattributed events
-        </span>
+        <span className="panel-note">{runs.length} runs · {ungrouped.length} unattributed events</span>
       </div>
 
       <div className="panel">
@@ -134,7 +155,7 @@ export default function Runs() {
           // and the independent re-run disagreed. Surface it rather than bury it.
           const over = f.claimed === "reproduced" && (f.tier === "analytical" || f.tier === "refuted");
           return (
-            <div key={f.id} className="panel" style={{ marginBottom: "0.5rem" }}>
+            <div key={f.id} id={"finding-" + f.id} className="panel" style={{ marginBottom: "0.5rem", ...(isOpen ? { borderColor: "var(--consensus, #2f7)" } : {}) }}>
               <div
                 className="panel-head"
                 style={{ cursor: "pointer" }}
