@@ -1,0 +1,39 @@
+# fly.io config for the Patchwork WebSocket relay.
+#
+# RELAY_SECRET is NOT stored here. Set it as a secret (encrypted, injected at
+# runtime) with:
+#
+#     fly secrets set RELAY_SECRET=<a-long-random-string>
+#
+# Do the same value for the Next app's server-side RELAY_SECRET so /emit auth matches.
+
+app = "patchwork-relay"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+
+# fly proxies WebSocket over HTTPS/WSS automatically — no extra config needed;
+# ws upgrades ride the same TLS-terminated https connection.
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 1000
+    soft_limit = 800
+
+  # Cheap liveness check hitting the plain HTTP health route.
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "5s"
+    method = "get"
+    path = "/health"

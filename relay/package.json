@@ -1,0 +1,16 @@
+{
+  "name": "patchwork-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Minimal WebSocket relay for Patchwork: broadcasts push events to dashboard viewers.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

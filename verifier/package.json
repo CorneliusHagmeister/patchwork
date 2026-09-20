@@ -1,0 +1,16 @@
+{
+  "name": "patchwork-verifier",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Central verifier: re-runs submitted PoVs in an ephemeral sandbox and flips the confirmed tier.",
+  "scripts": {
+    "worker": "node worker.mjs",
+    "check": "node --check verify.mjs && node --check worker.mjs"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^0.68.0",
+    "@e2b/code-interpreter": "^1.0.0",
+    "@trigger.dev/sdk": "^3.3.0"
+  }
+}
